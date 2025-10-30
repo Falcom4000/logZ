@@ -1,0 +1,24 @@
+# Bazel build outputs
+bazel-*
+.bazel-*
+
+# Compiled binaries
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+
+# Test outputs
+test/test_queue
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

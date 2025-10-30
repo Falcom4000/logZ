@@ -1,0 +1,14 @@
+build --cxxopt=-std=c++20
+build --cxxopt=-Wall
+build --cxxopt=-Wextra
+build --cxxopt=-O3
+
+# Use Clang as the compiler
+build --repo_env=CC=clang
+build --repo_env=CXX=clang++
+
+# Enable color output
+build --color=yes
+
+# Show detailed test output
+test --test_output=all

@@ -4,6 +4,7 @@ cc_library(
     hdrs = [
         "include/Queue.h",
         "include/RingBytes.h",
+        "include/Logger.h",
     ],
     includes = ["include"],
     visibility = ["//visibility:public"],

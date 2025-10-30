@@ -161,15 +161,15 @@ private:
         auto writer = output_buffer_.get_writer();
         
         // Build the formatted string directly in the output buffer
-        // Format: [LEVEL] HH:MM:SS:sss: message
+        // Format: [LEVEL] HH:MM:SS:sss message
         writer.append(level_to_string(metadata->level));
         writer.append(" ");
         writer.append(format_timestamp(metadata->timestamp));
-        writer.append(": ");
-        
-        // Decode arguments using the stored decoder
+        writer.append(" ");
+
+        // Decode arguments using the stored decoder, writes directly to writer
         if (metadata->decoder != nullptr && args_buffer != nullptr) {
-            writer.append(metadata->decoder(args_buffer));
+            metadata->decoder(args_buffer, writer);
         }
         
         // Writer will finalize automatically on destruction
@@ -204,20 +204,67 @@ private:
         // Convert nanoseconds to milliseconds
         uint64_t total_ms = timestamp_ns / 1000000;
         
-        // Extract time components
+        // Extract milliseconds part (0-999)
+        uint32_t milliseconds = total_ms - (total_ms / 1000) * 1000;
+        
+        // Convert to seconds
         uint64_t total_seconds = total_ms / 1000;
-        uint32_t milliseconds = total_ms % 1000;
         
-        uint32_t hours = (total_seconds / 3600) % 24;
-        uint32_t minutes = (total_seconds / 60) % 60;
-        uint32_t seconds = total_seconds % 60;
+        // Fast modulo for seconds in day (86400 = 24*60*60)
+        // Using the fact that we only care about time within a day
+        total_seconds = total_seconds - (total_seconds / 86400) * 86400;
         
-        // Format as HH:MM:SS:sss
+        // Extract hours (0-23)
+        uint32_t hours = total_seconds / 3600;
+        total_seconds -= hours * 3600;
+        
+        // Extract minutes (0-59)
+        uint32_t minutes = total_seconds / 60;
+        
+        // Extract seconds (0-59)
+        uint32_t seconds = total_seconds - minutes * 60;
+        
+        // Pre-computed digit table for faster conversion
+        static constexpr char digits[200] = {
+            '0','0','0','1','0','2','0','3','0','4','0','5','0','6','0','7','0','8','0','9',
+            '1','0','1','1','1','2','1','3','1','4','1','5','1','6','1','7','1','8','1','9',
+            '2','0','2','1','2','2','2','3','2','4','2','5','2','6','2','7','2','8','2','9',
+            '3','0','3','1','3','2','3','3','3','4','3','5','3','6','3','7','3','8','3','9',
+            '4','0','4','1','4','2','4','3','4','4','4','5','4','6','4','7','4','8','4','9',
+            '5','0','5','1','5','2','5','3','5','4','5','5','5','6','5','7','5','8','5','9',
+            '6','0','6','1','6','2','6','3','6','4','6','5','6','6','6','7','6','8','6','9',
+            '7','0','7','1','7','2','7','3','7','4','7','5','7','6','7','7','7','8','7','9',
+            '8','0','8','1','8','2','8','3','8','4','8','5','8','6','8','7','8','8','8','9',
+            '9','0','9','1','9','2','9','3','9','4','9','5','9','6','9','7','9','8','9','9'
+        };
+        
+        // Format as HH:MM:SS:sss using lookup table
         char buffer[13];  // "HH:MM:SS:sss\0"
-        std::snprintf(buffer, sizeof(buffer), "%02u:%02u:%02u:%03u",
-                     hours, minutes, seconds, milliseconds);
         
-        return std::string(buffer);
+        // Hours (HH)
+        buffer[0] = digits[hours * 2];
+        buffer[1] = digits[hours * 2 + 1];
+        buffer[2] = ':';
+        
+        // Minutes (MM)
+        buffer[3] = digits[minutes * 2];
+        buffer[4] = digits[minutes * 2 + 1];
+        buffer[5] = ':';
+        
+        // Seconds (SS)
+        buffer[6] = digits[seconds * 2];
+        buffer[7] = digits[seconds * 2 + 1];
+        buffer[8] = ':';
+        
+        // Milliseconds (sss)
+        uint32_t ms_hundreds = milliseconds / 100;
+        uint32_t ms_remainder = milliseconds - ms_hundreds * 100;
+        buffer[9] = '0' + ms_hundreds;
+        buffer[10] = digits[ms_remainder * 2];
+        buffer[11] = digits[ms_remainder * 2 + 1];
+        buffer[12] = '\0';
+        
+        return std::string(buffer, 12);
     }
 
     std::vector<Queue*> queues_;           // All registered thread queues

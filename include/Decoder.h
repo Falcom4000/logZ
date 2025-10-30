@@ -1,24 +1,23 @@
 #pragma once
 
 #include <cstddef>
-#include <cstdint>
 #include <cstring>
-#include <string>
 #include <type_traits>
 #include <tuple>
 #include <utility>
 #include <format>
+#include "StringRingBuffer.h"
 
 namespace logZ {
 
 /**
  * @brief Decoder function type
- * Takes a buffer pointer and returns formatted string
+ * Takes a buffer pointer and a writer, writes directly to writer
  * 
  * @param ptr Pointer to encoded arguments data
- * @return Formatted string
+ * @param writer StringWriter to write formatted output
  */
-using DecoderFunc = std::string (*)(const std::byte*);
+using DecoderFunc = void (*)(const std::byte*, StringRingBuffer::StringWriter&);
 
 /**
  * @brief Helper to decode and extract value from a single argument
@@ -76,10 +75,10 @@ struct DecodedValue {
  * 
  * @tparam Args Types of arguments to decode (first one should be format string)
  * @param ptr Pointer to encoded arguments
- * @return Formatted string
+ * @param writer StringWriter to write formatted output
  */
 template<typename FormatStr, typename... Args>
-std::string decode(const std::byte* ptr) {
+void decode(const std::byte* ptr, StringRingBuffer::StringWriter& writer) {
     const std::byte* current = ptr;
     
     // Decode format string (first argument)
@@ -88,8 +87,8 @@ std::string decode(const std::byte* ptr) {
     current = format_pair.second;
     
     if constexpr (sizeof...(Args) == 0) {
-        // No format arguments, just return the format string
-        return std::string(format);
+        // No format arguments, just write the format string
+        writer.append(format);
     } else {
         // Decode all format arguments
         auto decode_all_args = [&current]() {
@@ -104,9 +103,11 @@ std::string decode(const std::byte* ptr) {
         
         auto args_tuple = decode_all_args();
         
-        // Use std::format with the format string and arguments
-        return std::apply([format](auto&&... args) {
-            return std::format(format, std::forward<decltype(args)>(args)...);
+        // Format and write directly to writer
+        std::apply([&writer, format](auto&&... args) {
+            // Use std::format to create the string, then write once
+            auto formatted = std::format(format, std::forward<decltype(args)>(args)...);
+            writer.append(formatted);
         }, args_tuple);
     }
 }
@@ -115,7 +116,7 @@ std::string decode(const std::byte* ptr) {
  * @brief Generate decoder function for specific argument types
  * @tparam FormatStr Type of format string (first argument)
  * @tparam Args Types of format arguments (remaining arguments)
- * @return Function pointer that can decode these argument types and return formatted string
+ * @return Function pointer that can decode these argument types and write to writer
  */
 template<typename FormatStr, typename... Args>
 auto get_decoder() {

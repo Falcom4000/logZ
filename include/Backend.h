@@ -21,8 +21,8 @@ namespace logZ {
 template<LogLevel MinLevel = LogLevel::INFO>
 class Backend {
 public:
-    Backend(const std::string& log_filename = "app.log", size_t buffer_size = 1024 * 1024) 
-        : running_(false), output_buffer_(buffer_size), sinker_(log_filename) {}
+    Backend(const std::string& log_dir = "./logs", size_t buffer_size = 1024 * 1024) 
+        : running_(false), output_buffer_(buffer_size), sinker_(log_dir) {}
 
     ~Backend() {
         stop();
@@ -123,16 +123,16 @@ private:
     bool process_one_log() {
         // Poll all registered queues and find the log entry with minimum timestamp
         Queue* selected_queue = nullptr;
-        const LogMetadata* selected_meta = nullptr;
+        const Metadata* selected_meta = nullptr;
         uint64_t min_timestamp = UINT64_MAX;
         
         // Traverse all queue heads to find minimum timestamp
         for (Queue* queue : queues_) {
             if (queue != nullptr) {
                 // Peek metadata to get timestamp
-                std::byte* meta_buffer = queue->read(sizeof(LogMetadata));
+                std::byte* meta_buffer = queue->read(sizeof(Metadata));
                 if (meta_buffer != nullptr) {
-                    const auto* meta = reinterpret_cast<const LogMetadata*>(meta_buffer);
+                    const auto* meta = reinterpret_cast<const Metadata*>(meta_buffer);
                     if (meta->timestamp < min_timestamp) {
                         min_timestamp = meta->timestamp;
                         selected_queue = queue;
@@ -156,9 +156,9 @@ private:
      * @param queue The queue to read from
      * @param meta The metadata (already peeked)
      */
-    void process_log_from_queue(Queue* queue, const LogMetadata* metadata) {
+    void process_log_from_queue(Queue* queue, const Metadata* metadata) {
         // Commit metadata read
-        queue->commit_read(sizeof(LogMetadata));
+        queue->commit_read(sizeof(Metadata));
         
         // Now read the arguments
         std::byte* args_buffer = nullptr;
@@ -185,7 +185,10 @@ private:
         // Even if args_buffer is nullptr (no arguments), we still need to call decoder
         // because it contains the format string which should be written
         if (metadata->decoder != nullptr) {
-            metadata->decoder(args_buffer, writer);
+            // Cast decoder back to actual type: void (*)(const std::byte*, StringRingBuffer::StringWriter&)
+            using ActualDecoderFunc = void (*)(const std::byte*, StringRingBuffer::StringWriter&);
+            auto actual_decoder = reinterpret_cast<ActualDecoderFunc>(metadata->decoder);
+            actual_decoder(args_buffer, writer);
         }
         
         // Add newline at the end of each log entry

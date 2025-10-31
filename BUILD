@@ -4,9 +4,11 @@ cc_library(
     hdrs = [
         "include/Queue.h",
         "include/RingBytes.h",
+        "include/LogTypes.h",
         "include/Logger.h",
         "include/Backend.h",
         "include/Decoder.h",
+        "include/Encoder.h",
         "include/Sinker.h",
         "include/StringRingBuffer.h",
         "include/Fixedstring.h",

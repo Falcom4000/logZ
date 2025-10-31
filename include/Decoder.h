@@ -1,4 +1,5 @@
 #pragma once
+#include "LogTypes.h"
 #include "StringRingBuffer.h"
 #include "Fixedstring.h"
 
@@ -19,9 +20,12 @@ namespace logZ {
  * Takes a buffer pointer and a writer, writes directly to writer
  * 
  * @param ptr Pointer to encoded arguments data
- * @param writer StringWriter to write formatted output
+ * @param writer StringWriter to write formatted output (passed as void* from LogTypes.h)
+ * 
+ * Note: DecoderFunc is defined in LogTypes.h as void (*)(const std::byte*, void*)
+ * to avoid circular dependencies. The actual signature we use is:
+ * void (*)(const std::byte*, StringRingBuffer::StringWriter&)
  */
-using DecoderFunc = void (*)(const std::byte*, StringRingBuffer::StringWriter&);
 
 /**
  * @brief Helper to decode and extract value from a single argument

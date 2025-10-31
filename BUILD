@@ -5,6 +5,10 @@ cc_library(
         "include/Queue.h",
         "include/RingBytes.h",
         "include/Logger.h",
+        "include/Backend.h",
+        "include/Decoder.h",
+        "include/Sinker.h",
+        "include/StringRingBuffer.h",
     ],
     includes = ["include"],
     visibility = ["//visibility:public"],
@@ -21,3 +25,4 @@ cc_test(
     ],
     linkopts = ["-pthread"],
 )
+

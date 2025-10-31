@@ -242,14 +242,6 @@ private:
         auto duration = now.time_since_epoch();
         return std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
     }
-
-    /**
-     * @brief Get current thread ID
-     */
-    static uint32_t get_thread_id() {
-        auto tid = std::hash<std::thread::id>{}(std::this_thread::get_id());
-        return static_cast<uint32_t>(tid);
-    }
 };
 
 } // namespace logZ

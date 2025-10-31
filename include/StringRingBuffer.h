@@ -7,6 +7,9 @@
 
 namespace logZ {
 
+// Forward declaration
+class Sinker;
+
 /**
  * @brief Ring buffer for formatted string storage
  * Single-threaded, expandable ring buffer using std::byte as underlying storage
@@ -82,11 +85,19 @@ public:
 
     /**
      * @brief Get a writer for in-place construction
+     * @param sinker Optional sinker - if buffer is full, flush to sinker instead of expanding
+     * @return StringWriter object, or throw if buffer is full and no sinker provided
      */
-    StringWriter get_writer() {
+    StringWriter get_writer(class Sinker* sinker = nullptr) {
         size_t min_space = 256;  // Minimum space for string data
         if (get_free_space() < min_space) {
-            expand(min_space);
+            if (sinker != nullptr) {
+                // Flush to sinker instead of expanding
+                flush_to_sinker(sinker);
+            } else {
+                // No sinker, expand as before
+                expand(min_space);
+            }
         }
         return StringWriter(this);
     }
@@ -129,6 +140,11 @@ public:
     size_t capacity() const {
         return capacity_;
     }
+
+    /**
+     * @brief Flush all data to sinker and clear buffer
+     */
+    void flush_to_sinker(Sinker* sinker);
 
 private:
     /**
@@ -209,5 +225,38 @@ private:
     size_t read_{0};       // Read position
     size_t write_{0};      // Write position
 };
+
+} // namespace logZ
+
+// Include Sinker after StringRingBuffer definition and outside namespace
+#include "Sinker.h"
+
+namespace logZ {
+
+// Inline implementation of flush_to_sinker
+inline void StringRingBuffer::flush_to_sinker(Sinker* sinker) {
+    if (sinker == nullptr || empty()) {
+        return;
+    }
+
+    size_t used = get_used_space();
+    
+    if (write_ >= read_) {
+        // Data is contiguous
+        sinker->write(data_ + read_, used);
+    } else {
+        // Data wraps around
+        // First part: from read_ to end of buffer
+        size_t first_part = capacity_ - read_;
+        sinker->write(data_ + read_, first_part);
+        
+        // Second part: from start to write_
+        sinker->write(data_, write_);
+    }
+    
+    // Clear the buffer after flushing
+    read_ = 0;
+    write_ = 0;
+}
 
 } // namespace logZ

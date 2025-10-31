@@ -3,6 +3,7 @@
 #include "Decoder.h"
 #include "Logger.h"
 #include "Queue.h"
+#include "Sinker.h"
 #include "StringRingBuffer.h"
 #include <atomic>
 #include <chrono>
@@ -20,7 +21,8 @@ namespace logZ {
 template<LogLevel MinLevel = LogLevel::INFO>
 class Backend {
 public:
-    Backend() : running_(false), output_buffer_(1024) {}
+    Backend(const std::string& log_filename = "app.log", size_t buffer_size = 1024 * 1024) 
+        : running_(false), output_buffer_(buffer_size), sinker_(log_filename) {}
 
     ~Backend() {
         stop();
@@ -64,6 +66,17 @@ public:
         if (consumer_thread_.joinable()) {
             consumer_thread_.join();
         }
+        
+        // Flush remaining data to disk
+        flush_to_disk();
+    }
+    
+    /**
+     * @brief Flush output buffer to disk
+     */
+    void flush_to_disk() {
+        output_buffer_.flush_to_sinker(&sinker_);
+        sinker_.flush();
     }
 
     /**
@@ -88,12 +101,12 @@ private:
      * @brief Main consume loop running in backend thread
      */
     void consume_loop() {
-        while (running_.load(std::memory_order_relaxed)) {
+        while (running_.load(::std::memory_order_relaxed)) {
             bool processed_any = process_one_log();
 
             // If no work was done, sleep briefly to avoid busy-waiting
             if (!processed_any) {
-                std::this_thread::sleep_for(std::chrono::microseconds(100));
+                ::std::this_thread::sleep_for(std::chrono::microseconds(100));
             }
         }
 
@@ -158,7 +171,8 @@ private:
         }
         
         // Get a writer for in-place string construction in output buffer
-        auto writer = output_buffer_.get_writer();
+        // If buffer is full, it will flush to sinker
+        auto writer = output_buffer_.get_writer(&sinker_);
         
         // Build the formatted string directly in the output buffer
         // Format: [LEVEL] HH:MM:SS:sss message
@@ -269,6 +283,7 @@ private:
 
     std::vector<Queue*> queues_;           // All registered thread queues
     StringRingBuffer output_buffer_;       // Output buffer for formatted strings
+    Sinker sinker_;                        // File sinker for writing to disk
     std::atomic<bool> running_;            // Backend running flag
     std::thread consumer_thread_;          // Backend consumer thread
 };

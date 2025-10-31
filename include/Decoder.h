@@ -1,4 +1,6 @@
 #pragma once
+#include "StringRingBuffer.h"
+#include "Fixedstring.h"
 
 #include <cstddef>
 #include <cstring>
@@ -6,7 +8,7 @@
 #include <tuple>
 #include <utility>
 #include <format>
-#include "StringRingBuffer.h"
+
 
 namespace logZ {
 
@@ -77,18 +79,13 @@ struct DecodedValue {
  * @param ptr Pointer to encoded arguments
  * @param writer StringWriter to write formatted output
  */
-template<typename FormatStr, typename... Args>
+template<auto FMT, typename... Args>
 void decode(const std::byte* ptr, StringRingBuffer::StringWriter& writer) {
     const std::byte* current = ptr;
     
-    // Decode format string (first argument)
-    auto format_pair = DecodedValue<FormatStr>::decode_impl(current);
-    auto format = format_pair.first;
-    current = format_pair.second;
-    
     if constexpr (sizeof...(Args) == 0) {
         // No format arguments, just write the format string
-        writer.append(format);
+        writer.append(FMT.sv());
     } else {
         // Decode all format arguments
         auto decode_all_args = [&current]() {
@@ -104,9 +101,10 @@ void decode(const std::byte* ptr, StringRingBuffer::StringWriter& writer) {
         auto args_tuple = decode_all_args();
         
         // Format and write directly to writer
-        std::apply([&writer, format](auto&&... args) {
+        std::apply([&](auto&&... args) {
             // Use std::format to create the string, then write once
-            auto formatted = std::format(format, std::forward<decltype(args)>(args)...);
+            // TODO: no copy nor memory allocation version
+            auto formatted = std::format(FMT.sv(), std::forward<decltype(args)>(args)...);
             writer.append(formatted);
         }, args_tuple);
     }
@@ -118,11 +116,11 @@ void decode(const std::byte* ptr, StringRingBuffer::StringWriter& writer) {
  * @tparam Args Types of format arguments (remaining arguments)
  * @return Function pointer that can decode these argument types and write to writer
  */
-template<typename FormatStr, typename... Args>
+template<auto FMT, typename... Args>
 auto get_decoder() {
     // Return a static function pointer for this specific argument type combination
     // This function is generated at compile-time, one per unique Args... combination
-    return &decode<FormatStr, Args...>;
+    return &decode<FixedString(FMT), Args...>;
 }
 
 } // namespace logZ

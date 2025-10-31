@@ -2,6 +2,8 @@
 
 #include "Queue.h"
 #include "Decoder.h"
+#include "Fixedstring.h"
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -10,6 +12,7 @@
 #include <thread>
 #include <memory>
 #include <type_traits>
+#include <utility>
 
 namespace logZ {
 
@@ -81,14 +84,15 @@ public:
 
     /**
      * @brief Log a message with variadic template parameters
+     * @tparam Fmt Format string (compile-time constant)
      * @tparam Level Log level (compile-time constant)
      * @tparam Args Types of arguments to log
      * @param args Arguments to serialize and log
      */
-    template<LogLevel Level, typename... Args>
+    template<auto Fmt, LogLevel Level, typename... Args>
     static void log_impl(const Args&... args) {
         auto timestamp = get_timestamp_ns();
-        // Calculate total size needed
+        // Calculate total size needed (no format string in queue anymore)
         size_t total_size = sizeof(LogMetadata) + calculate_args_size(args...);
 
         // Reserve space in queue
@@ -101,7 +105,7 @@ public:
         }
 
         // Encode metadata and arguments into buffer
-        encode<Level>(buffer, timestamp, args...);
+        encode<Fmt, Level>(buffer, timestamp, args...);
 
         // Commit write
         queue.commit_write(total_size);
@@ -217,7 +221,7 @@ private:
      * @param args Arguments to encode
      * @return Pointer to the end of encoded data
      */
-    template<LogLevel Level, typename... Args>
+    template<auto FMT, LogLevel Level, typename... Args>
     static void encode(std::byte* buffer, uint64_t timestamp, const Args&... args) {
         // Calculate args size
         size_t args_size = calculate_args_size(args...);
@@ -227,7 +231,7 @@ private:
         metadata->level = Level;
         metadata->timestamp = timestamp;
         metadata->args_size = static_cast<uint32_t>(args_size);
-        metadata->decoder = get_decoder<Args...>();  // Store decoder function pointer
+        metadata->decoder = get_decoder<FixedString(FMT), Args...>();  // Store decoder function pointer
         
         // Write arguments after metadata
         std::byte* ptr = buffer + sizeof(LogMetadata);
@@ -246,33 +250,38 @@ private:
 
 } // namespace logZ
 
+// Helper macros to extract first argument and remaining arguments
+#define LOGZ_FIRST_ARG(fmt, ...) fmt
+#define LOGZ_REST_ARGS(fmt, ...) __VA_ARGS__
+
 // Logging macros - use Logger static methods
-#define LOG_TRACE(...) \
+// Format: LOG_INFO("format string {}", arg1, arg2, ...)
+#define LOG_TRACE(fmt, ...) \
     do { \
-        ::logZ::Logger<::logZ::LogLevel::TRACE>::log_impl<::logZ::LogLevel::TRACE>(__VA_ARGS__); \
+        ::logZ::Logger<::logZ::LogLevel::TRACE>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::TRACE>(__VA_ARGS__); \
     } while(0)
 
-#define LOG_DEBUG(...) \
+#define LOG_DEBUG(fmt, ...) \
     do { \
-        ::logZ::Logger<::logZ::LogLevel::DEBUG>::log_impl<::logZ::LogLevel::DEBUG>(__VA_ARGS__); \
+        ::logZ::Logger<::logZ::LogLevel::DEBUG>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::DEBUG>(__VA_ARGS__); \
     } while(0)
 
-#define LOG_INFO(...) \
+#define LOG_INFO(fmt, ...) \
     do { \
-        ::logZ::Logger<>::log_impl<::logZ::LogLevel::INFO>(__VA_ARGS__); \
+        ::logZ::Logger<>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::INFO>(__VA_ARGS__); \
     } while(0)
 
-#define LOG_WARN(...) \
+#define LOG_WARN(fmt, ...) \
     do { \
-        ::logZ::Logger<>::log_impl<::logZ::LogLevel::WARN>(__VA_ARGS__); \
+        ::logZ::Logger<>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::WARN>(__VA_ARGS__); \
     } while(0)
 
-#define LOG_ERROR(...) \
+#define LOG_ERROR(fmt, ...) \
     do { \
-        ::logZ::Logger<>::log_impl<::logZ::LogLevel::ERROR>(__VA_ARGS__); \
+        ::logZ::Logger<>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::ERROR>(__VA_ARGS__); \
     } while(0)
 
-#define LOG_FATAL(...) \
+#define LOG_FATAL(fmt, ...) \
     do { \
-        ::logZ::Logger<>::log_impl<::logZ::LogLevel::FATAL>(__VA_ARGS__); \
+        ::logZ::Logger<>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::FATAL>(__VA_ARGS__); \
     } while(0)

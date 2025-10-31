@@ -9,6 +9,7 @@ cc_library(
         "include/Decoder.h",
         "include/Sinker.h",
         "include/StringRingBuffer.h",
+        "include/Fixedstring.h",
     ],
     includes = ["include"],
     visibility = ["//visibility:public"],

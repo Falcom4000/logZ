@@ -130,7 +130,15 @@ private:
             // String literal: store as pointer (8 bytes) + length (2 bytes unsigned short)
             return 8 + sizeof(unsigned short);
         }
-        // Case 3: Runtime strings (const char* or char*)
+        // Case 3: std::string - store full content with '\0'
+        else if constexpr (std::is_same_v<RawT, std::string>) {
+            return arg.size() + 1; // Include '\0'
+        }
+        // Case 4: std::string_view - store full content with '\0'
+        else if constexpr (std::is_same_v<RawT, std::string_view>) {
+            return arg.size() + 1; // Include '\0'
+        }
+        // Case 5: Runtime strings (const char* or char*)
         else if constexpr (std::is_pointer_v<RawT> && 
                           std::is_same_v<std::remove_cv_t<std::remove_pointer_t<RawT>>, char>) {
             // Runtime string: store actual string content including '\0'
@@ -181,7 +189,20 @@ private:
             std::memcpy(ptr, &len, sizeof(unsigned short));
             return ptr + sizeof(unsigned short);
         }
-        // Case 3: Runtime strings - store full string content with '\0'
+        // Case 3: std::string - store full content with '\0'
+        else if constexpr (std::is_same_v<RawT, std::string>) {
+            size_t len = arg.size() + 1; // Include '\0'
+            std::memcpy(ptr, arg.c_str(), len);
+            return ptr + len;
+        }
+        // Case 4: std::string_view - store full content with '\0'
+        else if constexpr (std::is_same_v<RawT, std::string_view>) {
+            size_t len = arg.size();
+            std::memcpy(ptr, arg.data(), len);
+            ptr[len] = std::byte{'\0'}; // Add null terminator
+            return ptr + len + 1;
+        }
+        // Case 5: Runtime C strings (const char* or char*) - store full string content with '\0'
         else if constexpr (std::is_pointer_v<RawT> && 
                           std::is_same_v<std::remove_cv_t<std::remove_pointer_t<RawT>>, char>) {
             if (arg != nullptr) {
@@ -231,7 +252,7 @@ private:
         metadata->level = Level;
         metadata->timestamp = timestamp;
         metadata->args_size = static_cast<uint32_t>(args_size);
-        metadata->decoder = get_decoder<FixedString(FMT), Args...>();  // Store decoder function pointer
+        metadata->decoder = get_decoder<FMT, Args...>();  // Store decoder function pointer
         
         // Write arguments after metadata
         std::byte* ptr = buffer + sizeof(LogMetadata);
@@ -256,6 +277,7 @@ private:
 
 // Logging macros - use Logger static methods
 // Format: LOG_INFO("format string {}", arg1, arg2, ...)
+// All macros use Logger<LogLevel::TRACE> to share the same thread_local queue
 #define LOG_TRACE(fmt, ...) \
     do { \
         ::logZ::Logger<::logZ::LogLevel::TRACE>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::TRACE>(__VA_ARGS__); \
@@ -263,25 +285,25 @@ private:
 
 #define LOG_DEBUG(fmt, ...) \
     do { \
-        ::logZ::Logger<::logZ::LogLevel::DEBUG>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::DEBUG>(__VA_ARGS__); \
+        ::logZ::Logger<::logZ::LogLevel::TRACE>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::DEBUG>(__VA_ARGS__); \
     } while(0)
 
 #define LOG_INFO(fmt, ...) \
     do { \
-        ::logZ::Logger<>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::INFO>(__VA_ARGS__); \
+        ::logZ::Logger<::logZ::LogLevel::TRACE>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::INFO>(__VA_ARGS__); \
     } while(0)
 
 #define LOG_WARN(fmt, ...) \
     do { \
-        ::logZ::Logger<>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::WARN>(__VA_ARGS__); \
+        ::logZ::Logger<::logZ::LogLevel::TRACE>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::WARN>(__VA_ARGS__); \
     } while(0)
 
 #define LOG_ERROR(fmt, ...) \
     do { \
-        ::logZ::Logger<>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::ERROR>(__VA_ARGS__); \
+        ::logZ::Logger<::logZ::LogLevel::TRACE>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::ERROR>(__VA_ARGS__); \
     } while(0)
 
 #define LOG_FATAL(fmt, ...) \
     do { \
-        ::logZ::Logger<>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::FATAL>(__VA_ARGS__); \
+        ::logZ::Logger<::logZ::LogLevel::TRACE>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::FATAL>(__VA_ARGS__); \
     } while(0)

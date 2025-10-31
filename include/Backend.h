@@ -182,9 +182,14 @@ private:
         writer.append(" ");
 
         // Decode arguments using the stored decoder, writes directly to writer
-        if (metadata->decoder != nullptr && args_buffer != nullptr) {
+        // Even if args_buffer is nullptr (no arguments), we still need to call decoder
+        // because it contains the format string which should be written
+        if (metadata->decoder != nullptr) {
             metadata->decoder(args_buffer, writer);
         }
+        
+        // Add newline at the end of each log entry
+        writer.append("\n");
         
         // Writer will finalize automatically on destruction
         

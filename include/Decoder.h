@@ -8,6 +8,8 @@
 #include <tuple>
 #include <utility>
 #include <format>
+#include <string>
+#include <string_view>
 
 
 namespace logZ {
@@ -51,7 +53,19 @@ struct DecodedValue {
             
             return std::make_pair(str_ptr, ptr);
         }
-        // Case 3: Runtime strings - read string content
+        // Case 3: std::string - read string content (stored as C string)
+        else if constexpr (std::is_same_v<RawT, std::string>) {
+            const char* str = reinterpret_cast<const char*>(ptr);
+            size_t len = std::strlen(str) + 1;
+            return std::make_pair(str, ptr + len); // Return const char* for formatting
+        }
+        // Case 4: std::string_view - read string content (stored as C string)
+        else if constexpr (std::is_same_v<RawT, std::string_view>) {
+            const char* str = reinterpret_cast<const char*>(ptr);
+            size_t len = std::strlen(str) + 1;
+            return std::make_pair(str, ptr + len); // Return const char* for formatting
+        }
+        // Case 5: Runtime C strings - read string content
         else if constexpr (std::is_pointer_v<RawT> && 
                           std::is_same_v<std::remove_cv_t<std::remove_pointer_t<RawT>>, char>) {
             const char* str = reinterpret_cast<const char*>(ptr);
@@ -75,6 +89,7 @@ struct DecodedValue {
  * 
  * The first argument is expected to be a format string, and the rest are the format arguments.
  * 
+ * @tparam FMT Format string as non-type template parameter
  * @tparam Args Types of arguments to decode (first one should be format string)
  * @param ptr Pointer to encoded arguments
  * @param writer StringWriter to write formatted output
@@ -87,18 +102,16 @@ void decode(const std::byte* ptr, StringRingBuffer::StringWriter& writer) {
         // No format arguments, just write the format string
         writer.append(FMT.sv());
     } else {
-        // Decode all format arguments
-        auto decode_all_args = [&current]() {
-            return std::make_tuple(
-                [&current]() {
-                    auto pair = DecodedValue<Args>::decode_impl(current);
-                    current = pair.second;
-                    return pair.first;
-                }()...
-            );
+        // Decode all format arguments one by one
+        // Use std::tuple{...} instead of std::make_tuple(...) to ensure 
+        // left-to-right evaluation order of the initializer list
+        auto args_tuple = std::tuple{
+            [&current]() {
+                auto pair = DecodedValue<Args>::decode_impl(current);
+                current = pair.second;  // Update pointer after each decode
+                return pair.first;       // Return the decoded value
+            }()...
         };
-        
-        auto args_tuple = decode_all_args();
         
         // Format and write directly to writer using format_to
         std::apply([&](auto&&... args) {
@@ -111,7 +124,7 @@ void decode(const std::byte* ptr, StringRingBuffer::StringWriter& writer) {
 
 /**
  * @brief Generate decoder function for specific argument types
- * @tparam FormatStr Type of format string (first argument)
+ * @tparam FMT Format string as non-type template parameter
  * @tparam Args Types of format arguments (remaining arguments)
  * @return Function pointer that can decode these argument types and write to writer
  */
@@ -119,7 +132,7 @@ template<auto FMT, typename... Args>
 auto get_decoder() {
     // Return a static function pointer for this specific argument type combination
     // This function is generated at compile-time, one per unique Args... combination
-    return &decode<FixedString(FMT), Args...>;
+    return &decode<FMT, Args...>;
 }
 
 } // namespace logZ

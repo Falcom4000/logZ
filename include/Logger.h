@@ -66,13 +66,23 @@ struct LogMetadata {
     DecoderFunc decoder;     // Function pointer to decode the arguments (generated at compile-time)
 };
 
+// Compile-time minimum log level configuration
+// Change this to adjust minimum log level at compile time
+#ifndef LOGZ_MIN_LEVEL
+#define LOGZ_MIN_LEVEL ::logZ::LogLevel::TRACE
+#endif
+
 /**
  * @brief Logger frontend - puts messages into queue
- * @tparam MinLevel Minimum log level (compile-time constant)
+ * Note: Logger is no longer templated on MinLevel to ensure all log macros
+ * share the same thread_local queue instance.
+ * MinLevel is now a compile-time constant defined by LOGZ_MIN_LEVEL.
  */
-template<LogLevel MinLevel = LogLevel::INFO>
 class Logger {
 public:
+    // Compile-time minimum log level
+    static constexpr LogLevel MinLevel = LOGZ_MIN_LEVEL;
+
     /**
      * @brief Get thread-local queue
      * Each thread has its own queue
@@ -88,6 +98,7 @@ public:
      * @tparam Level Log level (compile-time constant)
      * @tparam Args Types of arguments to log
      * @param args Arguments to serialize and log
+     * Note: Level check should be done at macro level before calling this function
      */
     template<auto Fmt, LogLevel Level, typename... Args>
     static void log_impl(const Args&... args) {
@@ -277,33 +288,46 @@ private:
 
 // Logging macros - use Logger static methods
 // Format: LOG_INFO("format string {}", arg1, arg2, ...)
-// All macros use Logger<LogLevel::TRACE> to share the same thread_local queue
+// All macros use the same Logger class (no template parameter) to share the same thread_local queue
+// Compile-time level check is done at macro expansion time
 #define LOG_TRACE(fmt, ...) \
     do { \
-        ::logZ::Logger<::logZ::LogLevel::TRACE>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::TRACE>(__VA_ARGS__); \
+        if constexpr (::logZ::LogLevel::TRACE >= ::logZ::Logger::MinLevel) { \
+            ::logZ::Logger::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::TRACE>(__VA_ARGS__); \
+        } \
     } while(0)
 
 #define LOG_DEBUG(fmt, ...) \
     do { \
-        ::logZ::Logger<::logZ::LogLevel::TRACE>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::DEBUG>(__VA_ARGS__); \
+        if constexpr (::logZ::LogLevel::DEBUG >= ::logZ::Logger::MinLevel) { \
+            ::logZ::Logger::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::DEBUG>(__VA_ARGS__); \
+        } \
     } while(0)
 
 #define LOG_INFO(fmt, ...) \
     do { \
-        ::logZ::Logger<::logZ::LogLevel::TRACE>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::INFO>(__VA_ARGS__); \
+        if constexpr (::logZ::LogLevel::INFO >= ::logZ::Logger::MinLevel) { \
+            ::logZ::Logger::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::INFO>(__VA_ARGS__); \
+        } \
     } while(0)
 
 #define LOG_WARN(fmt, ...) \
     do { \
-        ::logZ::Logger<::logZ::LogLevel::TRACE>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::WARN>(__VA_ARGS__); \
+        if constexpr (::logZ::LogLevel::WARN >= ::logZ::Logger::MinLevel) { \
+            ::logZ::Logger::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::WARN>(__VA_ARGS__); \
+        } \
     } while(0)
 
 #define LOG_ERROR(fmt, ...) \
     do { \
-        ::logZ::Logger<::logZ::LogLevel::TRACE>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::ERROR>(__VA_ARGS__); \
+        if constexpr (::logZ::LogLevel::ERROR >= ::logZ::Logger::MinLevel) { \
+            ::logZ::Logger::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::ERROR>(__VA_ARGS__); \
+        } \
     } while(0)
 
 #define LOG_FATAL(fmt, ...) \
     do { \
-        ::logZ::Logger<::logZ::LogLevel::TRACE>::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::FATAL>(__VA_ARGS__); \
+        if constexpr (::logZ::LogLevel::FATAL >= ::logZ::Logger::MinLevel) { \
+            ::logZ::Logger::log_impl<::logZ::FixedString(fmt), ::logZ::LogLevel::FATAL>(__VA_ARGS__); \
+        } \
     } while(0)

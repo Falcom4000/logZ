@@ -76,7 +76,7 @@ protected:
 
 TEST_F(SingleThreadLoggerTest, SingleParameter_Integer) {
     Backend<LogLevel::INFO> backend(log_file_, 1024 * 1024);
-    backend.register_queue(&Logger<LogLevel::TRACE>::get_thread_queue());
+    backend.register_queue(&Logger::get_thread_queue());
     backend.start();
 
     LOG_INFO("Test integer: {}", 42);
@@ -90,7 +90,7 @@ TEST_F(SingleThreadLoggerTest, SingleParameter_Integer) {
 
 TEST_F(SingleThreadLoggerTest, SingleParameter_Double) {
     Backend<LogLevel::INFO> backend(log_file_, 1024 * 1024);
-    backend.register_queue(&Logger<LogLevel::TRACE>::get_thread_queue());
+    backend.register_queue(&Logger::get_thread_queue());
     backend.start();
 
     LOG_INFO("Test double: {}", 3.14159);
@@ -104,7 +104,7 @@ TEST_F(SingleThreadLoggerTest, SingleParameter_Double) {
 
 TEST_F(SingleThreadLoggerTest, SingleParameter_StringLiteral) {
     Backend<LogLevel::INFO> backend(log_file_, 1024 * 1024);
-    backend.register_queue(&Logger<LogLevel::TRACE>::get_thread_queue());
+    backend.register_queue(&Logger::get_thread_queue());
     backend.start();
 
     LOG_INFO("Test string: {}", "hello");
@@ -118,7 +118,7 @@ TEST_F(SingleThreadLoggerTest, SingleParameter_StringLiteral) {
 
 TEST_F(SingleThreadLoggerTest, SingleParameter_StdString) {
     Backend<LogLevel::INFO> backend(log_file_, 1024 * 1024);
-    backend.register_queue(&Logger<LogLevel::TRACE>::get_thread_queue());
+    backend.register_queue(&Logger::get_thread_queue());
     backend.start();
 
     std::string test_str = "std::string message";
@@ -133,7 +133,7 @@ TEST_F(SingleThreadLoggerTest, SingleParameter_StdString) {
 
 TEST_F(SingleThreadLoggerTest, SingleParameter_RuntimeCString) {
     Backend<LogLevel::INFO> backend(log_file_, 1024 * 1024);
-    backend.register_queue(&Logger<LogLevel::TRACE>::get_thread_queue());
+    backend.register_queue(&Logger::get_thread_queue());
     backend.start();
 
     const char* c_str = "runtime c string";
@@ -148,7 +148,7 @@ TEST_F(SingleThreadLoggerTest, SingleParameter_RuntimeCString) {
 
 TEST_F(SingleThreadLoggerTest, MultipleParameters_Mixed) {
     Backend<LogLevel::INFO> backend(log_file_, 1024 * 1024);
-    backend.register_queue(&Logger<LogLevel::TRACE>::get_thread_queue());
+    backend.register_queue(&Logger::get_thread_queue());
     backend.start();
 
     LOG_INFO("Mixed: int={} double={} string={}", 42, 3.14, "text");
@@ -162,7 +162,7 @@ TEST_F(SingleThreadLoggerTest, MultipleParameters_Mixed) {
 
 TEST_F(SingleThreadLoggerTest, MultipleParameters_AllTypes) {
     Backend<LogLevel::INFO> backend(log_file_, 1024 * 1024);
-    backend.register_queue(&Logger<LogLevel::TRACE>::get_thread_queue());
+    backend.register_queue(&Logger::get_thread_queue());
     backend.start();
 
     std::string std_str = "std_string";
@@ -177,7 +177,7 @@ TEST_F(SingleThreadLoggerTest, MultipleParameters_AllTypes) {
 
 TEST_F(SingleThreadLoggerTest, NoParameters_FormatStringOnly) {
     Backend<LogLevel::INFO> backend(log_file_, 1024 * 1024);
-    backend.register_queue(&Logger<LogLevel::TRACE>::get_thread_queue());
+    backend.register_queue(&Logger::get_thread_queue());
     backend.start();
 
     LOG_INFO("Simple message without parameters");
@@ -191,7 +191,7 @@ TEST_F(SingleThreadLoggerTest, NoParameters_FormatStringOnly) {
 
 TEST_F(SingleThreadLoggerTest, MultipleLogs_Sequential) {
     Backend<LogLevel::TRACE> backend(log_file_, 1024 * 1024);
-    backend.register_queue(&Logger<LogLevel::TRACE>::get_thread_queue());
+    backend.register_queue(&Logger::get_thread_queue());
     backend.start();
 
     for (int i = 0; i < 10; ++i) {
@@ -211,7 +211,7 @@ TEST_F(SingleThreadLoggerTest, MultipleLogs_Sequential) {
 
 TEST_F(SingleThreadLoggerTest, DifferentLogLevels) {
     Backend<LogLevel::TRACE> backend(log_file_, 1024 * 1024);
-    backend.register_queue(&Logger<LogLevel::TRACE>::get_thread_queue());
+    backend.register_queue(&Logger::get_thread_queue());
     backend.start();
 
     LOG_TRACE("Trace message");
@@ -233,7 +233,7 @@ TEST_F(SingleThreadLoggerTest, DifferentLogLevels) {
 
 TEST_F(SingleThreadLoggerTest, EmptyStringParameter) {
     Backend<LogLevel::INFO> backend(log_file_, 1024 * 1024);
-    backend.register_queue(&Logger<LogLevel::TRACE>::get_thread_queue());
+    backend.register_queue(&Logger::get_thread_queue());
     backend.start();
 
     std::string empty_str = "";
@@ -248,7 +248,7 @@ TEST_F(SingleThreadLoggerTest, EmptyStringParameter) {
 
 TEST_F(SingleThreadLoggerTest, LongString) {
     Backend<LogLevel::INFO> backend(log_file_, 1024 * 1024);
-    backend.register_queue(&Logger<LogLevel::TRACE>::get_thread_queue());
+    backend.register_queue(&Logger::get_thread_queue());
     backend.start();
 
     std::string long_str(500, 'A');
@@ -263,7 +263,7 @@ TEST_F(SingleThreadLoggerTest, LongString) {
 
 TEST_F(SingleThreadLoggerTest, SpecialCharacters) {
     Backend<LogLevel::INFO> backend(log_file_, 1024 * 1024);
-    backend.register_queue(&Logger<LogLevel::TRACE>::get_thread_queue());
+    backend.register_queue(&Logger::get_thread_queue());
     backend.start();
 
     LOG_INFO("Special chars: {} {} {}", "\n", "\t", "\\");
@@ -289,7 +289,7 @@ TEST_F(MultiThreadLoggerTest, TwoThreads_SimpleLog) {
     for (int t = 0; t < 2; ++t) {
         threads.emplace_back([&queue_mutex, &queues, t]() {
             // Get this thread's queue
-            Queue* my_queue = &Logger<LogLevel::TRACE>::get_thread_queue();
+            Queue* my_queue = &Logger::get_thread_queue();
             {
                 std::lock_guard<std::mutex> lock(queue_mutex);
                 queues.push_back(my_queue);
@@ -343,7 +343,7 @@ TEST_F(MultiThreadLoggerTest, FourThreads_MixedParameters) {
     
     for (int t = 0; t < 4; ++t) {
         threads.emplace_back([&queue_mutex, &queues, t]() {
-            Queue* my_queue = &Logger<LogLevel::TRACE>::get_thread_queue();
+            Queue* my_queue = &Logger::get_thread_queue();
             {
                 std::lock_guard<std::mutex> lock(queue_mutex);
                 queues.push_back(my_queue);
@@ -389,7 +389,7 @@ TEST_F(MultiThreadLoggerTest, EightThreads_HighThroughput) {
     
     for (int t = 0; t < num_threads; ++t) {
         threads.emplace_back([&queue_mutex, &queues, t, logs_per_thread]() {
-            Queue* my_queue = &Logger<LogLevel::TRACE>::get_thread_queue();
+            Queue* my_queue = &Logger::get_thread_queue();
             {
                 std::lock_guard<std::mutex> lock(queue_mutex);
                 queues.push_back(my_queue);
@@ -435,7 +435,7 @@ TEST_F(MultiThreadLoggerTest, ConcurrentWithStdString) {
     
     for (int t = 0; t < 4; ++t) {
         threads.emplace_back([&queue_mutex, &queues, t]() {
-            Queue* my_queue = &Logger<LogLevel::TRACE>::get_thread_queue();
+            Queue* my_queue = &Logger::get_thread_queue();
             {
                 std::lock_guard<std::mutex> lock(queue_mutex);
                 queues.push_back(my_queue);

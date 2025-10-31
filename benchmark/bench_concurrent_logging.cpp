@@ -53,7 +53,7 @@ static void BM_ConcurrentLogging_8Threads(benchmark::State& state) {
     // 注册当前线程的队列到后端
     static thread_local bool registered = false;
     if (!registered) {
-        g_backend->register_queue(&Logger<>::get_thread_queue());
+        g_backend->register_queue(&Logger::get_thread_queue());
         registered = true;
     }
     
@@ -116,7 +116,7 @@ static void BM_ConcurrentLogging_VaryingLoad(benchmark::State& state) {
     
     static thread_local bool registered = false;
     if (!registered) {
-        g_backend->register_queue(&Logger<>::get_thread_queue());
+        g_backend->register_queue(&Logger::get_thread_queue());
         registered = true;
     }
     
@@ -172,7 +172,7 @@ static void BM_ConcurrentLogging_QPS(benchmark::State& state) {
     
     static thread_local bool registered = false;
     if (!registered) {
-        g_backend->register_queue(&Logger<>::get_thread_queue());
+        g_backend->register_queue(&Logger::get_thread_queue());
         registered = true;
     }
     

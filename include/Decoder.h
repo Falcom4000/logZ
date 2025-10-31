@@ -100,12 +100,11 @@ void decode(const std::byte* ptr, StringRingBuffer::StringWriter& writer) {
         
         auto args_tuple = decode_all_args();
         
-        // Format and write directly to writer
+        // Format and write directly to writer using format_to
         std::apply([&](auto&&... args) {
-            // Use std::format to create the string, then write once
-            // TODO: no copy nor memory allocation version
-            auto formatted = std::format(FMT.sv(), std::forward<decltype(args)>(args)...);
-            writer.append(formatted);
+            // Use std::format_to to write directly to the ring buffer
+            // No temporary string allocation
+            std::format_to(writer.get_iterator(), FMT.sv(), std::forward<decltype(args)>(args)...);
         }, args_tuple);
     }
 }

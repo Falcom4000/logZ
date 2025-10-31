@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <memory>
 
 namespace logZ {
@@ -59,6 +60,13 @@ public:
         }
 
         /**
+         * @brief Append a string_view
+         */
+        void append(std::string_view sv) {
+            append(sv.data(), sv.size());
+        }
+
+        /**
          * @brief Append a C-string
          */
         void append(const char* str) {
@@ -77,6 +85,51 @@ public:
             }
             
             buffer_->write_bytes(reinterpret_cast<const std::byte*>(data), length);
+        }
+
+        /**
+         * @brief Append a single character (for output iterator compatibility)
+         */
+        void push_back(char c) {
+            if (buffer_->get_free_space() < 1) {
+                if (!buffer_->expand(1)) {
+                    return;  // Cannot expand
+                }
+            }
+            buffer_->write_bytes(reinterpret_cast<const std::byte*>(&c), 1);
+        }
+
+        /**
+         * @brief Output iterator for std::format_to
+         */
+        class Iterator {
+        public:
+            using iterator_category = std::output_iterator_tag;
+            using value_type = char;
+            using difference_type = std::ptrdiff_t;
+            using pointer = char*;
+            using reference = char&;
+
+            explicit Iterator(StringWriter* writer) : writer_(writer) {}
+
+            Iterator& operator=(char c) {
+                writer_->push_back(c);
+                return *this;
+            }
+
+            Iterator& operator*() { return *this; }
+            Iterator& operator++() { return *this; }
+            Iterator operator++(int) { return *this; }
+
+        private:
+            StringWriter* writer_;
+        };
+
+        /**
+         * @brief Get an output iterator for std::format_to
+         */
+        Iterator get_iterator() {
+            return Iterator(this);
         }
 
     private:
@@ -125,20 +178,6 @@ public:
      */
     bool empty() const {
         return read_ == write_;
-    }
-
-    /**
-     * @brief Get number of bytes currently in buffer
-     */
-    size_t size() const {
-        return get_used_space();
-    }
-
-    /**
-     * @brief Get current capacity in bytes
-     */
-    size_t capacity() const {
-        return capacity_;
     }
 
     /**

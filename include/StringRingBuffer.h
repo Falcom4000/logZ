@@ -293,6 +293,9 @@ inline void StringRingBuffer::flush_to_sinker(Sinker* sinker) {
         sinker->write(data_, write_);
     }
     
+    // Flush to ensure data is written to disk
+    sinker->flush();
+    
     // Clear the buffer after flushing
     read_ = 0;
     write_ = 0;

@@ -14,6 +14,13 @@
 
 namespace logZ {
 
+// Forward declarations
+template<LogLevel MinLevel>
+class Backend;
+
+template<LogLevel MinLevel>
+class QueueRegistration;
+
 // Compile-time string concatenation macros for "[filename:line functionname]" format
 #define LOGZ_LOCATION_STR_IMPL(file, line, func) "[" file ":" #line " " func "]"
 #define LOGZ_LOCATION_STR(file, line, func) LOGZ_LOCATION_STR_IMPL(file, line, func)
@@ -60,13 +67,20 @@ public:
     static constexpr LogLevel MinLevel = LOGZ_MIN_LEVEL;
 
     /**
-     * @brief Get thread-local queue
-     * Each thread has its own queue
+     * @brief Get the backend instance (global singleton)
+     * @return Reference to Backend singleton
      */
-    static Queue& get_thread_queue() {
-        static thread_local Queue queue(4096);
-        return queue;
+    template<LogLevel BackendMinLevel = MinLevel>
+    static Backend<BackendMinLevel>& get_backend() {
+        return Backend<BackendMinLevel>::get_instance();
     }
+
+    /**
+     * @brief Get thread-local queue with automatic allocation from Backend
+     * Each thread has its own queue, automatically allocated by Backend on first use
+     * Backend owns the Queue, thread only borrows a pointer
+     */
+    static Queue& get_thread_queue();
 
     /**
      * @brief Log a message with variadic template parameters
@@ -109,6 +123,46 @@ private:
         return std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
     }
 };
+
+} // namespace logZ
+
+// Backend must be included before implementing get_thread_queue
+#include "Backend.h"
+
+namespace logZ {
+
+// Implementation of get_thread_queue() - must be after Backend is complete
+inline Queue& Logger::get_thread_queue() {
+    // Thread-local raw pointer (Borrower)
+    static thread_local Queue* queue_ptr = nullptr;
+    
+    // First call: allocate Queue from Backend
+    if (queue_ptr == nullptr) {
+        auto& backend = get_backend<MinLevel>();
+        queue_ptr = backend.allocate_queue_for_thread();
+        
+        if (!queue_ptr) {
+            // Should never happen, but handle gracefully
+            throw std::runtime_error("Failed to allocate queue from Backend");
+        }
+    }
+    
+    // RAII cleanup: mark Queue as abandoned when thread exits
+    static thread_local struct Cleanup {
+        Queue* q;
+        
+        ~Cleanup() {
+            if (q) {
+                auto& backend = Logger::get_backend<MinLevel>();
+                backend.mark_queue_abandoned(q);
+            }
+            // Note: DO NOT delete queue!
+            // Backend owns the Queue and will destroy it after draining
+        }
+    } cleanup{queue_ptr};
+    
+    return *queue_ptr;
+}
 
 } // namespace logZ
 

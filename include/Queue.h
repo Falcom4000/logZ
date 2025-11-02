@@ -29,6 +29,9 @@ private:
     };
 
 public:
+    // Maximum capacity for a single node (64MB)
+    static constexpr size_t MAX_NODE_CAPACITY = 64 * 1024 * 1024;
+    
     /**
      * @brief Constructor
      * @param initial_capacity Initial capacity of the first RingBytes
@@ -79,12 +82,29 @@ public:
             return ptr;
         }
 
-        // Current RingBytes is full, create a new one with double capacity
+        // Current RingBytes is full
+        // If already at max capacity (64MB), reject the write (drop message)
+        if (current_write->capacity >= MAX_NODE_CAPACITY) {
+            return nullptr;  // Drop message when at max capacity
+        }
+        
+        // Create a new node with double capacity, capped at MAX_NODE_CAPACITY
         size_t new_capacity = current_write->capacity * 2;
+        if (new_capacity > MAX_NODE_CAPACITY) {
+            new_capacity = MAX_NODE_CAPACITY;
+        }
         
         // Make sure new capacity is at least large enough for this write
-        while (new_capacity < size) {
+        while (new_capacity < size && new_capacity < MAX_NODE_CAPACITY) {
             new_capacity *= 2;
+            if (new_capacity > MAX_NODE_CAPACITY) {
+                new_capacity = MAX_NODE_CAPACITY;
+            }
+        }
+        
+        // If size is larger than MAX_NODE_CAPACITY, reject it
+        if (size > MAX_NODE_CAPACITY) {
+            return nullptr;
         }
         
         Node* new_node = new Node(new_capacity);
@@ -122,12 +142,29 @@ public:
             return ptr;
         }
 
-        // Current RingBytes is full, create a new one with double capacity
+        // Current RingBytes is full
+        // If already at max capacity (64MB), reject the write (drop message)
+        if (current_write->capacity >= MAX_NODE_CAPACITY) {
+            return nullptr;  // Drop message when at max capacity
+        }
+        
+        // Create a new node with double capacity, capped at MAX_NODE_CAPACITY
         size_t new_capacity = current_write->capacity * 2;
+        if (new_capacity > MAX_NODE_CAPACITY) {
+            new_capacity = MAX_NODE_CAPACITY;
+        }
         
         // Make sure new capacity is at least large enough for this write
-        while (new_capacity < size) {
+        while (new_capacity < size && new_capacity < MAX_NODE_CAPACITY) {
             new_capacity *= 2;
+            if (new_capacity > MAX_NODE_CAPACITY) {
+                new_capacity = MAX_NODE_CAPACITY;
+            }
+        }
+        
+        // If size is larger than MAX_NODE_CAPACITY, reject it
+        if (size > MAX_NODE_CAPACITY) {
+            return nullptr;
         }
         
         Node* new_node = new Node(new_capacity);
@@ -235,6 +272,14 @@ public:
         }
         
         return total;
+    }
+    
+    /**
+     * @brief Check if the queue is empty (no data available to read)
+     * @return true if empty, false otherwise
+     */
+    bool is_empty() const {
+        return available_read() == 0;
     }
 
     /**

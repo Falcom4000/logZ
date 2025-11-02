@@ -44,37 +44,43 @@ struct DecodedValue {
             std::memcpy(&value, ptr, sizeof(RawT));
             return std::make_pair(value, ptr + sizeof(RawT));
         }
-        // Case 2: Compile-time string literals - read pointer (8 bytes) + length (2 bytes unsigned short)
+        // Case 2: Compile-time string literals - read length (2 bytes) + pointer (8 bytes)
         else if constexpr (std::is_array_v<RawT> && 
                           std::is_same_v<std::remove_extent_t<RawT>, char>) {
-            const char* str_ptr = nullptr;
-            std::memcpy(&str_ptr, ptr, sizeof(const char*));
-            ptr += sizeof(const char*);
-            
             unsigned short len = 0;
             std::memcpy(&len, ptr, sizeof(unsigned short));
             ptr += sizeof(unsigned short);
             
+            const char* str_ptr = nullptr;
+            std::memcpy(&str_ptr, ptr, sizeof(const char*));
+            ptr += sizeof(const char*);
+            
             return std::make_pair(str_ptr, ptr);
         }
-        // Case 3: std::string - read string content (stored as C string)
+        // Case 3: std::string - read length (2 bytes) + string content (no '\0')
         else if constexpr (std::is_same_v<RawT, std::string>) {
+            unsigned short len = 0;
+            std::memcpy(&len, ptr, sizeof(unsigned short));
+            ptr += sizeof(unsigned short);
             const char* str = reinterpret_cast<const char*>(ptr);
-            size_t len = std::strlen(str) + 1;
-            return std::make_pair(str, ptr + len); // Return const char* for formatting
+            return std::make_pair(std::string_view(str, len), ptr + len); // Use string_view with explicit length
         }
-        // Case 4: std::string_view - read string content (stored as C string)
+        // Case 4: std::string_view - read length (2 bytes) + string content (no '\0')
         else if constexpr (std::is_same_v<RawT, std::string_view>) {
+            unsigned short len = 0;
+            std::memcpy(&len, ptr, sizeof(unsigned short));
+            ptr += sizeof(unsigned short);
             const char* str = reinterpret_cast<const char*>(ptr);
-            size_t len = std::strlen(str) + 1;
-            return std::make_pair(str, ptr + len); // Return const char* for formatting
+            return std::make_pair(std::string_view(str, len), ptr + len); // Use string_view with explicit length
         }
-        // Case 5: Runtime C strings - read string content
+        // Case 5: Runtime C strings - read length (2 bytes) + string content (no '\0')
         else if constexpr (std::is_pointer_v<RawT> && 
                           std::is_same_v<std::remove_cv_t<std::remove_pointer_t<RawT>>, char>) {
+            unsigned short len = 0;
+            std::memcpy(&len, ptr, sizeof(unsigned short));
+            ptr += sizeof(unsigned short);
             const char* str = reinterpret_cast<const char*>(ptr);
-            size_t len = std::strlen(str) + 1;
-            return std::make_pair(str, ptr + len);
+            return std::make_pair(std::string_view(str, len), ptr + len); // Use string_view with explicit length
         }
         // Default case for other types
         else {

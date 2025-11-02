@@ -31,22 +31,26 @@ inline size_t calculate_single_arg_size(const T& arg) {
     // Must check BEFORE decay to distinguish from char*
     else if constexpr (std::is_array_v<RawT> && 
                       std::is_same_v<std::remove_extent_t<RawT>, char>) {
-        // String literal: store as pointer (8 bytes) + length (2 bytes unsigned short)
-        return 8 + sizeof(unsigned short);
+        // String literal: store as length (2 bytes unsigned short) + pointer (8 bytes)
+        return sizeof(unsigned short) + 8;
     }
-    // Case 3: std::string - store full content with '\0'
+    // Case 3: std::string - store length (2 bytes) + content (no '\0' needed)
     else if constexpr (std::is_same_v<RawT, std::string>) {
-        return arg.size() + 1; // Include '\0'
+        return sizeof(unsigned short) + arg.size(); // length + content
     }
-    // Case 4: std::string_view - store full content with '\0'
+    // Case 4: std::string_view - store length (2 bytes) + content (no '\0' needed)
     else if constexpr (std::is_same_v<RawT, std::string_view>) {
-        return arg.size() + 1; // Include '\0'
+        return sizeof(unsigned short) + arg.size(); // length + content
     }
     // Case 5: Runtime strings (const char* or char*)
     else if constexpr (std::is_pointer_v<RawT> && 
                       std::is_same_v<std::remove_cv_t<std::remove_pointer_t<RawT>>, char>) {
-        // Runtime string: store actual string content including '\0'
-        return arg != nullptr ? (std::strlen(arg) + 1) : 0;
+        // Runtime string: store length (2 bytes) + content (no '\0' needed)
+        if (arg != nullptr) {
+            size_t len = std::strlen(arg);
+            return sizeof(unsigned short) + len;
+        }
+        return 0;
     }
     // Default case for other types (could be extended)
     else {
@@ -80,38 +84,44 @@ inline std::byte* encode_single_arg(std::byte* ptr, const T& arg) {
         std::memcpy(ptr, &arg, sizeof(RawT));
         return ptr + sizeof(RawT);
     }
-    // Case 2: Compile-time string literals - store pointer (8 bytes) + length (2 bytes)
+    // Case 2: Compile-time string literals - store length (2 bytes) + pointer (8 bytes)
     else if constexpr (std::is_array_v<RawT> && 
                       std::is_same_v<std::remove_extent_t<RawT>, char>) {
+        // Store the length as unsigned short first
+        unsigned short len = static_cast<unsigned short>(std::extent_v<RawT> - 1); // -1 to exclude '\0'
+        std::memcpy(ptr, &len, sizeof(unsigned short));
+        ptr += sizeof(unsigned short);
+        
         // Store the pointer to the string literal
         const char* str_ptr = arg;
         std::memcpy(ptr, &str_ptr, sizeof(const char*));
-        ptr += sizeof(const char*);
-        
-        // Store the length as unsigned short
-        unsigned short len = static_cast<unsigned short>(std::extent_v<RawT> - 1); // -1 to exclude '\0'
-        std::memcpy(ptr, &len, sizeof(unsigned short));
-        return ptr + sizeof(unsigned short);
+        return ptr + sizeof(const char*);
     }
-    // Case 3: std::string - store full content with '\0'
+    // Case 3: std::string - store length (2 bytes) + content (no '\0' needed)
     else if constexpr (std::is_same_v<RawT, std::string>) {
-        size_t len = arg.size() + 1; // Include '\0'
-        std::memcpy(ptr, arg.c_str(), len);
+        unsigned short len = static_cast<unsigned short>(arg.size());
+        std::memcpy(ptr, &len, sizeof(unsigned short));
+        ptr += sizeof(unsigned short);
+        std::memcpy(ptr, arg.data(), len); // No '\0' needed
         return ptr + len;
     }
-    // Case 4: std::string_view - store full content with '\0'
+    // Case 4: std::string_view - store length (2 bytes) + content (no '\0' needed)
     else if constexpr (std::is_same_v<RawT, std::string_view>) {
-        size_t len = arg.size();
-        std::memcpy(ptr, arg.data(), len);
-        ptr[len] = std::byte{'\0'}; // Add null terminator
-        return ptr + len + 1;
+        unsigned short len = static_cast<unsigned short>(arg.size());
+        std::memcpy(ptr, &len, sizeof(unsigned short));
+        ptr += sizeof(unsigned short);
+        std::memcpy(ptr, arg.data(), len); // No '\0' needed
+        return ptr + len;
     }
-    // Case 5: Runtime C strings (const char* or char*) - store full string content with '\0'
+    // Case 5: Runtime C strings (const char* or char*) - store length (2 bytes) + content (no '\0' needed)
     else if constexpr (std::is_pointer_v<RawT> && 
                       std::is_same_v<std::remove_cv_t<std::remove_pointer_t<RawT>>, char>) {
         if (arg != nullptr) {
-            size_t len = std::strlen(arg) + 1; // Include '\0'
-            std::memcpy(ptr, arg, len);
+            size_t str_len = std::strlen(arg);
+            unsigned short len = static_cast<unsigned short>(str_len);
+            std::memcpy(ptr, &len, sizeof(unsigned short));
+            ptr += sizeof(unsigned short);
+            std::memcpy(ptr, arg, len); // No '\0' needed
             return ptr + len;
         }
         return ptr;

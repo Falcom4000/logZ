@@ -19,9 +19,27 @@ class Sinker;
  * Data is written in-place and read out as a byte stream
  */
 class StringRingBuffer {
+private:
+    // Helper: Round up to next power of 2
+    static constexpr size_t next_power_of_2(size_t n) {
+        if (n <= 1) return 1;
+        n--;
+        n |= n >> 1;
+        n |= n >> 2;
+        n |= n >> 4;
+        n |= n >> 8;
+        n |= n >> 16;
+        n |= n >> 32;
+        return n + 1;
+    }
+
 public:
     explicit StringRingBuffer(size_t initial_capacity = 64 * 1024)  // 64KB default
-        : data_(new std::byte[initial_capacity]), capacity_(initial_capacity) {
+        : capacity_(next_power_of_2(initial_capacity))
+        , capacity_mask_(capacity_ - 1)
+        , data_(new std::byte[capacity_])
+        , read_(0)
+        , write_(0) {
     }
 
     ~StringRingBuffer() {
@@ -213,7 +231,7 @@ private:
     void write_bytes(const std::byte* src, size_t length) {
         for (size_t i = 0; i < length; ++i) {
             data_[write_] = src[i];
-            write_ = (write_ + 1) % capacity_;
+            write_ = (write_ + 1) & capacity_mask_;
         }
     }
 
@@ -223,7 +241,7 @@ private:
     void read_bytes(std::byte* dst, size_t length) {
         for (size_t i = 0; i < length; ++i) {
             dst[i] = data_[read_];
-            read_ = (read_ + 1) % capacity_;
+            read_ = (read_ + 1) & capacity_mask_;
         }
     }
 
@@ -256,14 +274,16 @@ private:
         delete[] data_;
         data_ = new_data;
         capacity_ = new_capacity;
+        capacity_mask_ = capacity_ - 1;
         read_ = 0;
         write_ = used;
         
         return true;
     }
 
+    size_t capacity_;      // Total capacity in bytes (always power of 2)
+    size_t capacity_mask_; // Bitmask for fast modulo (capacity_ - 1)
     std::byte* data_;      // Underlying byte buffer
-    size_t capacity_;      // Total capacity in bytes
     size_t read_{0};       // Read position
     size_t write_{0};      // Write position
 };

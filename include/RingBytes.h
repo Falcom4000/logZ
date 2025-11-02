@@ -23,17 +23,18 @@ public:
      * @param capacity The capacity of the ring buffer (must be power of 2 for better performance)
      */
     explicit RingBytes(size_t capacity)
-        : capacity_(capacity)
+        : capacity_(next_power_of_2(capacity))
+        , capacity_mask_(capacity_ - 1)
         , write_pos_(0)
         , write_commit_pos_(0)
         , read_pos_(0)
-        , buffer_(std::make_unique<std::byte[]>(capacity)) {
+        , buffer_(std::make_unique<std::byte[]>(capacity_)) {
         
         // 优化：预先触发page fault，避免运行时延迟尖刺
         // 写入每个4KB页面（4096字节）让内核分配物理内存
         // 这会在初始化时一次性完成所有page fault，而不是在日志写入时触发
         constexpr size_t page_size = 4096;
-        for (size_t i = 0; i < capacity; i += page_size) {
+        for (size_t i = 0; i < capacity_; i += page_size) {
             buffer_[i] = std::byte{0};
         }
     }
@@ -75,8 +76,8 @@ public:
             return nullptr;  // Not enough space
         }
 
-        // Calculate position in buffer
-        size_t pos = current_write % capacity_;
+        // Calculate position in buffer using bit mask (faster than modulo)
+        size_t pos = current_write & capacity_mask_;
         
         // CRITICAL: Check if write would wrap around buffer boundary
         // If so, reject this write (caller should use new node)
@@ -107,8 +108,8 @@ public:
             return nullptr;
         }
 
-        // Handle wrap-around case
-        size_t write_start = (write_pos_.load(std::memory_order_relaxed) - size) % capacity_;
+        // Handle wrap-around case using bit mask (faster than modulo)
+        size_t write_start = (write_pos_.load(std::memory_order_relaxed) - size) & capacity_mask_;
         size_t first_part = std::min(size, capacity_ - write_start);
         
         std::memcpy(&buffer_[write_start], data, first_part);
@@ -159,8 +160,8 @@ public:
             return nullptr;  // Not enough data
         }
 
-        // Return pointer to the data
-        size_t pos = current_read % capacity_;
+        // Return pointer to the data using bit mask (faster than modulo)
+        size_t pos = current_read & capacity_mask_;
         return &buffer_[pos];
     }
 
@@ -204,7 +205,25 @@ public:
     }
 
 private:
-    const size_t capacity_;                    // Fixed capacity of the buffer
+    /**
+     * @brief Round up to the next power of 2
+     * @param n Input value
+     * @return Next power of 2 >= n
+     */
+    static constexpr size_t next_power_of_2(size_t n) {
+        if (n == 0) return 1;
+        --n;
+        n |= n >> 1;
+        n |= n >> 2;
+        n |= n >> 4;
+        n |= n >> 8;
+        n |= n >> 16;
+        n |= n >> 32;
+        return n + 1;
+    }
+
+    const size_t capacity_;                    // Fixed capacity of the buffer (power of 2)
+    const size_t capacity_mask_;               // Bit mask for fast modulo (capacity - 1)
     alignas(64) std::atomic<uint64_t> write_pos_;          // Current write position
     alignas(64) std::atomic<uint64_t> write_commit_pos_;   // Committed write position
     alignas(64) std::atomic<uint64_t> read_pos_;           // Current read position

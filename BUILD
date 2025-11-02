@@ -42,21 +42,3 @@ cc_test(
     copts = ["-std=c++20"],
 )
 
-
-# Example program
-cc_binary(
-    name = "example",
-    srcs = ["example.cpp"],
-    deps = [":logZ"],
-    linkopts = ["-pthread"],
-    copts = ["-std=c++20", "-O3"],
-)
-
-# CPU affinity test
-cc_binary(
-    name = "test_cpu_affinity",
-    srcs = ["test_cpu_affinity.cpp"],
-    deps = [":logZ"],
-    linkopts = ["-pthread"],
-    copts = ["-std=c++20", "-O3"],
-)

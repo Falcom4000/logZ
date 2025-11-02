@@ -16,7 +16,8 @@ namespace logZ {
  */
 class Queue {
 private:
-    struct Node {
+    // Cache line aligned node to prevent false sharing
+    struct alignas(64) Node {
         std::unique_ptr<RingBytes> ring;
         std::atomic<Node*> next;
         size_t capacity;
@@ -78,13 +79,14 @@ public:
         Node* current_write = write_node_.load(std::memory_order_acquire);
         std::byte* ptr = current_write->ring->reserve_write(size);
         
-        if (ptr != nullptr) {
+        // Hot path: Usually succeeds on first try
+        if (ptr != nullptr) [[likely]] {
             return ptr;
         }
 
         // Current RingBytes is full
         // If already at max capacity (64MB), reject the write (drop message)
-        if (current_write->capacity >= MAX_NODE_CAPACITY) {
+        if (current_write->capacity >= MAX_NODE_CAPACITY) [[unlikely]] {
             return nullptr;  // Drop message when at max capacity
         }
         
@@ -138,13 +140,14 @@ public:
         Node* current_write = write_node_.load(std::memory_order_acquire);
         std::byte* ptr = current_write->ring->write(data, size);
         
-        if (ptr != nullptr) {
+        // Hot path: Usually succeeds on first try
+        if (ptr != nullptr) [[likely]] {
             return ptr;
         }
 
         // Current RingBytes is full
         // If already at max capacity (64MB), reject the write (drop message)
-        if (current_write->capacity >= MAX_NODE_CAPACITY) {
+        if (current_write->capacity >= MAX_NODE_CAPACITY) [[unlikely]] {
             return nullptr;  // Drop message when at max capacity
         }
         

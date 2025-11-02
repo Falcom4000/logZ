@@ -13,8 +13,10 @@ namespace logZ {
  * 
  * This is a fixed-size circular buffer that stores std::byte data.
  * It supports lock-free operations for one writer and one reader.
+ * 
+ * Cache line alignment: Hot data members are aligned to prevent false sharing
  */
-class RingBytes {
+class alignas(64) RingBytes {
 public:
     /**
      * @brief Constructor
@@ -26,6 +28,14 @@ public:
         , write_commit_pos_(0)
         , read_pos_(0)
         , buffer_(std::make_unique<std::byte[]>(capacity)) {
+        
+        // 优化：预先触发page fault，避免运行时延迟尖刺
+        // 写入每个4KB页面（4096字节）让内核分配物理内存
+        // 这会在初始化时一次性完成所有page fault，而不是在日志写入时触发
+        constexpr size_t page_size = 4096;
+        for (size_t i = 0; i < capacity; i += page_size) {
+            buffer_[i] = std::byte{0};
+        }
     }
 
     ~RingBytes() = default;
@@ -60,7 +70,8 @@ public:
         // Calculate available space
         uint64_t available = capacity_ - (current_write - current_read);
         
-        if (size > available) {
+        // Hot path: Usually have space
+        if (size > available) [[unlikely]] {
             return nullptr;  // Not enough space
         }
 
@@ -69,7 +80,8 @@ public:
         
         // CRITICAL: Check if write would wrap around buffer boundary
         // If so, reject this write (caller should use new node)
-        if (pos + size > capacity_) {
+        // Hot path: Usually doesn't wrap
+        if (pos + size > capacity_) [[unlikely]] {
             return nullptr;  // Would wrap around, need new node
         }
 
@@ -91,7 +103,7 @@ public:
      */
     std::byte* write(const void* data, size_t size) {
         std::byte* dest = reserve_write(size);
-        if (dest == nullptr) {
+        if (dest == nullptr) [[unlikely]] {
             return nullptr;
         }
 

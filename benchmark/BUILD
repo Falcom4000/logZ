@@ -1,10 +1,10 @@
-# Benchmark binary with Google Benchmark
+# Latency benchmark
 cc_binary(
-    name = "bench_concurrent_logging",
-    srcs = ["bench_concurrent_logging.cpp"],
+    name = "logZ.benchmark",
+    srcs = ["logZ.benchmark.cpp"],
     deps = [
         "//:logZ",
-        "@com_google_benchmark//:benchmark",
     ],
     linkopts = ["-pthread"],
+    copts = ["-std=c++20"],
 )

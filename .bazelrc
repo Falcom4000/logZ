@@ -1,7 +1,66 @@
 build --cxxopt=-std=c++20
 build --cxxopt=-Wall
 build --cxxopt=-Wextra
+
+# ========================================
+# Performance Optimization Flags
+# ========================================
+
+# Basic optimization level
 build --cxxopt=-O3
+
+# Link-Time Optimization (LTO) - enables inter-procedural optimizations
+build --cxxopt=-flto
+build --linkopt=-flto
+
+# CPU-specific optimizations (march=native uses all available CPU features)
+build --cxxopt=-march=native
+build --cxxopt=-mtune=native
+
+# Fast math optimizations (be careful with floating point precision)
+build --cxxopt=-ffast-math
+
+# Inline optimizations
+build --cxxopt=-finline-functions
+build --cxxopt=-finline-limit=1000
+
+# Loop optimizations
+build --cxxopt=-ftree-vectorize
+build --cxxopt=-funroll-loops
+
+# Branch prediction optimizations
+# build --cxxopt=-fprofile-use-path-prefix  # Not supported in GCC 13
+build --cxxopt=-fpredictive-commoning
+
+# Devirtualization and IPA optimizations
+build --cxxopt=-fdevirtualize-at-ltrans
+build --cxxopt=-fipa-pta
+
+# Omit frame pointer for better performance (x86_64)
+build --cxxopt=-fomit-frame-pointer
+
+# No exceptions for better performance (if not needed)
+# build --cxxopt=-fno-exceptions
+
+# NDEBUG to disable assertions in release builds
+build --cxxopt=-DNDEBUG
+
+# Linker optimizations
+build --linkopt=-Wl,-O2
+build --linkopt=-Wl,--as-needed
+
+# Strip debug symbols for smaller binary
+# build --stripopt=always
+
+# ========================================
+# Architecture-specific SIMD optimizations
+# ========================================
+# Uncomment if you want to enable specific SIMD instruction sets
+# build --cxxopt=-mavx2
+# build --cxxopt=-msse4.2
+# build --cxxopt=-mfma
+
+# ========================================
 
 # Use GCC 13 as the compiler (supports C++20 <format>)
 build --repo_env=CC=/usr/bin/gcc-13

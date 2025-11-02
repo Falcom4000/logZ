@@ -117,11 +117,12 @@ inline Queue& Logger::get_thread_queue() {
     static thread_local Queue* queue_ptr = nullptr;
     
     // First call: allocate Queue from Backend
-    if (queue_ptr == nullptr) {
+    // Hot path: Usually already initialized
+    if (queue_ptr == nullptr) [[unlikely]] {
         auto& backend = get_backend<MinLevel>();
         queue_ptr = backend.allocate_queue_for_thread();
         
-        if (!queue_ptr) {
+        if (!queue_ptr) [[unlikely]] {
             // Should never happen, but handle gracefully
             throw std::runtime_error("Failed to allocate queue from Backend");
         }
@@ -148,13 +149,15 @@ inline Queue& Logger::get_thread_queue() {
 template<auto Fmt, LogLevel Level, typename... Args>
 void Logger::log_impl(const Args&... args) {
     auto timestamp = get_timestamp_ns();
-    // Calculate total size needed (no format string in queue anymore)
-    size_t total_size = sizeof(Metadata) + calculate_args_size(args...);
+    // Calculate args size once
+    size_t args_size = calculate_args_size(args...);
+    size_t total_size = sizeof(Metadata) + args_size;
 
     // Reserve space in queue
     Queue& queue = get_thread_queue();
     std::byte* buffer = queue.reserve_write(total_size);
-    if (buffer == nullptr) {
+    // Hot path: Buffer allocation usually succeeds
+    if (buffer == nullptr) [[unlikely]] {
         // Queue is full, log message lost
         // Increment dropped messages counter
         get_backend<MinLevel>().increment_dropped_count();
@@ -162,8 +165,8 @@ void Logger::log_impl(const Args&... args) {
     }
 
     // Encode metadata and arguments into buffer using Encoder functions
-    // Level is passed as template parameter
-    encode_log_entry<Fmt, Level>(buffer, timestamp, args...);
+    // Pass args_size to avoid redundant calculation
+    encode_log_entry<Fmt, Level>(buffer, timestamp, args_size, args...);
 
     // Commit write
     queue.commit_write(total_size);

@@ -39,8 +39,9 @@ private:
     /**
      * @brief Wrapper for Queue with lifecycle metadata
      * Backend uses this to manage Queue ownership and state
+     * Cache line aligned to prevent false sharing
      */
-    struct QueueWrapper {
+    struct alignas(64) QueueWrapper {
         std::unique_ptr<Queue> queue;              // Backend owns the Queue
         std::atomic<bool> abandoned{false};        // Set to true when thread exits
         std::thread::id owner_thread_id;           // Thread ID for debugging
@@ -287,7 +288,8 @@ private:
         
         while (running_.load(std::memory_order_relaxed)) {
             // Check dirty flag (only atomic load, no lock)
-            if (m_dirty.load(std::memory_order_acquire)) {
+            // Hot path: Usually not dirty
+            if (m_dirty.load(std::memory_order_acquire)) [[unlikely]] {
                 sync_active_list();  // Sync when updates detected
             }
             
@@ -302,7 +304,8 @@ private:
             }
 
             // If no work was done, sleep briefly to avoid busy-waiting
-            if (!processed_any) {
+            // Hot path: Usually processes something
+            if (!processed_any) [[unlikely]] {
                 std::this_thread::sleep_for(std::chrono::microseconds(100));
             }
         }
@@ -336,9 +339,9 @@ private:
         // Traverse all queue heads to find minimum timestamp
         // LOCK-FREE: Direct traversal of m_active_list, no atomic operations
         for (QueueWrapper* wrapper : *m_active_list) {
-            if (wrapper != nullptr && wrapper->queue != nullptr) {
+            if (wrapper != nullptr && wrapper->queue != nullptr) [[likely]] {
                 // Check if abandoned and empty - mark for reclaim
-                if (wrapper->abandoned.load(std::memory_order_acquire)) {
+                if (wrapper->abandoned.load(std::memory_order_acquire)) [[unlikely]] {
                     if (wrapper->queue->is_empty()) {
                         // Will be reclaimed in next reclaim cycle
                         continue;

@@ -144,13 +144,11 @@ inline void encode_args(std::byte* buffer, const Args&... args) {
  * @tparam Args Types of arguments to encode
  * @param buffer Buffer to write to
  * @param timestamp Timestamp in nanoseconds
+ * @param args_size Size of arguments (pre-calculated to avoid redundant computation)
  * @param args Arguments to encode
  */
 template<auto FMT, LogLevel Level, typename... Args>
-inline void encode_log_entry(std::byte* buffer, uint64_t timestamp, const Args&... args) {
-    // Calculate args size
-    size_t args_size = calculate_args_size(args...);
-    
+inline void encode_log_entry(std::byte* buffer, uint64_t timestamp, size_t args_size, const Args&... args) {
     // Use Metadata from LogTypes.h
     Metadata* metadata = reinterpret_cast<Metadata*>(buffer);
     metadata->level = Level;

@@ -78,8 +78,9 @@ public:
          */
         void append(const char* data, size_t length) {
             // Ensure we have space
-            if (buffer_->get_free_space() < length) {
-                if (!buffer_->expand(length)) {
+            // Hot path: Usually have enough space
+            if (buffer_->get_free_space() < length) [[unlikely]] {
+                if (!buffer_->expand(length)) [[unlikely]] {
                     return;  // Cannot expand
                 }
             }
@@ -91,8 +92,9 @@ public:
          * @brief Append a single character (for output iterator compatibility)
          */
         void push_back(char c) {
-            if (buffer_->get_free_space() < 1) {
-                if (!buffer_->expand(1)) {
+            // Hot path: Usually have space
+            if (buffer_->get_free_space() < 1) [[unlikely]] {
+                if (!buffer_->expand(1)) [[unlikely]] {
                     return;  // Cannot expand
                 }
             }
@@ -143,8 +145,9 @@ public:
      */
     StringWriter get_writer(class Sinker* sinker = nullptr) {
         size_t min_space = 256;  // Minimum space for string data
-        if (get_free_space() < min_space) {
-            if (sinker != nullptr) {
+        // Hot path: Usually have space
+        if (get_free_space() < min_space) [[unlikely]] {
+            if (sinker != nullptr) [[likely]] {
                 // Flush to sinker instead of expanding
                 flush_to_sinker(sinker);
             } else {

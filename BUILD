@@ -48,23 +48,15 @@ cc_binary(
     name = "example",
     srcs = ["example.cpp"],
     deps = [":logZ"],
-    copts = ["-std=c++20"],
+    linkopts = ["-pthread"],
+    copts = ["-std=c++20", "-O3"],
 )
 
-# Simple test program
+# CPU affinity test
 cc_binary(
-    name = "test_simple2",
-    srcs = ["test_simple2.cpp"],
+    name = "test_cpu_affinity",
+    srcs = ["test_cpu_affinity.cpp"],
     deps = [":logZ"],
-    copts = ["-std=c++20"],
-)
-
-
-# Example program with AddressSanitizer
-cc_binary(
-    name = "example_asan",
-    srcs = ["example.cpp"],
-    deps = [":logZ"],
-    linkopts = ["-pthread", "-fsanitize=address"],
-    copts = ["-std=c++20", "-fsanitize=address", "-fno-omit-frame-pointer", "-g"],
+    linkopts = ["-pthread"],
+    copts = ["-std=c++20", "-O3"],
 )

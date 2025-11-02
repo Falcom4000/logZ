@@ -1,173 +1,224 @@
 #include <benchmark/benchmark.h>
-#include "Logger.h"
-#include "Backend.h"
+#include "../include/Logger.h"
+#include "../include/Backend.h"
 #include <thread>
 #include <vector>
-#include <atomic>
-#include <chrono>
-#include <mutex>
-#include <memory>
-#include <cstdlib>
+#include <string>
+#include <x86intrin.h>  // For __rdtsc()
 
 using namespace logZ;
 
-// 全局后端实例 - 使用智能指针避免退出时崩溃
-static std::unique_ptr<Backend<LogLevel::INFO>> g_backend;
+// 读取CPU时间戳计数器（TSC）
+inline uint64_t rdtsc() {
+    return __rdtsc();
+}
 
-// 初始化后端
-static void InitBackend() {
-    if (!g_backend) {
-        g_backend = std::make_unique<Backend<LogLevel::INFO>>("benchmark.log", 4 * 1024 * 1024);  // 4MB buffer
-        g_backend->start();
-        // 注意：程序退出时不清理，避免崩溃
+// 全局Backend实例
+static Backend<LogLevel::TRACE>* g_backend = nullptr;
+
+// 初始化函数（benchmark开始前调用）
+static void SetupBackend(const benchmark::State& state) {
+    if (state.thread_index() == 0 && g_backend == nullptr) {
+        g_backend = &Logger::get_backend();
+        g_backend->start(0);  // 绑定到CPU核心0
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 }
 
-// 8线程并发写日志基准测试
-static void BM_ConcurrentLogging_8Threads(benchmark::State& state) {
-    // 每个线程在每次迭代中写入的日志数量
-    const int logs_per_iteration = state.range(0);
-    
-    // 初始化后端（只在第一个线程执行）
-    static std::once_flag init_flag;
-    std::call_once(init_flag, []() {
-        InitBackend();
-    });
-    
-    // 注册当前线程的队列到后端
-    static thread_local bool registered = false;
-    if (!registered && g_backend != nullptr) {
-        g_backend->register_queue(&Logger::get_thread_queue());
-        registered = true;
-    }
-    
-    // 统计变量
-    int64_t total_logs = 0;
-    
-    // 基准测试主循环
-    for (auto _ : state) {
-        // 每次迭代写入指定数量的日志
-        for (int i = 0; i < logs_per_iteration; ++i) {
-            // 记录前端延迟的开始时间
-            auto start = std::chrono::high_resolution_clock::now();
-            
-            // 写日志（混合不同类型的参数以模拟真实场景）
-            LOG_INFO("Benchmark log message thread_id={} iteration={} value={} count={}", 
-                     state.thread_index(), i, 42.5, total_logs);
-            
-            // 记录前端延迟的结束时间
-            auto end = std::chrono::high_resolution_clock::now();
-            
-            // 累加前端延迟
-            auto latency_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
-            state.counters["frontend_latency_ns"] += latency_ns;
-            
-            total_logs++;
-        }
-    }
-    
-    // 设置每次迭代处理的日志数
-    state.SetItemsProcessed(state.iterations() * logs_per_iteration);
-    
-    // 计算平均前端延迟
-    if (state.iterations() > 0) {
-        state.counters["avg_frontend_latency_ns"] = 
-            state.counters["frontend_latency_ns"] / (state.iterations() * logs_per_iteration);
-    }
-}
-
-// 注册基准测试：8个线程，每次迭代每个线程写1000条日志
-// 暂时禁用多线程测试（有崩溃问题）
-// BENCHMARK(BM_ConcurrentLogging_8Threads)
-//     ->Threads(8)                    // 8个线程
-//     ->Arg(1000)                     // 每次迭代每个线程写1000条日志
-//     ->Unit(benchmark::kMillisecond) // 时间单位为毫秒
-//     ->UseRealTime();                // 使用实际时间（wall time）
-
-
-// 简单的单线程测试
-static void BM_SingleThread_Simple(benchmark::State& state) {
-    static bool init = false;
-    if (!init) {
-        InitBackend();
-        g_backend->register_queue(&Logger::get_thread_queue());
-        init = true;
-    }
-    
-    int count = 0;
-    for (auto _ : state) {
-        LOG_INFO("Simple test message {}", count++);
-    }
-}
-
-BENCHMARK(BM_SingleThread_Simple)
-    ->Unit(benchmark::kMicrosecond);
-
-
-// 不同日志数量的基准测试
-static void BM_ConcurrentLogging_VaryingLoad(benchmark::State& state) {
-    const int logs_per_iteration = state.range(0);
-    
-    static std::once_flag init_flag;
-    std::call_once(init_flag, []() {
-        InitBackend();
-    });
-    
-    static thread_local bool registered = false;
-    if (!registered && g_backend != nullptr) {
-        g_backend->register_queue(&Logger::get_thread_queue());
-        registered = true;
-    }
-    
-    std::vector<int64_t> latencies;
-    latencies.reserve(logs_per_iteration);
-    
-    for (auto _ : state) {
-        for (int i = 0; i < logs_per_iteration; ++i) {
-            auto start = std::chrono::high_resolution_clock::now();
-            
-            LOG_INFO("Test message {} with data: {} status={}", i, 3.14159, true);
-            
-            auto end = std::chrono::high_resolution_clock::now();
-            latencies.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
-        }
-        
-        // 计算延迟统计
-        if (!latencies.empty()) {
-            std::sort(latencies.begin(), latencies.end());
-            state.counters["p50_latency_ns"] = latencies[latencies.size() / 2];
-            state.counters["p95_latency_ns"] = latencies[latencies.size() * 95 / 100];
-            state.counters["p99_latency_ns"] = latencies[latencies.size() * 99 / 100];
-            state.counters["max_latency_ns"] = latencies.back();
-        }
-        
-        latencies.clear();
-    }
-    
-    state.SetItemsProcessed(state.iterations() * logs_per_iteration);
-}
-
-// 测试不同负载：100, 500, 1000, 5000条日志
-// 暂时禁用多线程测试
-// BENCHMARK(BM_ConcurrentLogging_VaryingLoad)
-//     ->Threads(8)
-//     ->Args({100})
-//     ->Args({500})
-//     ->Args({1000})
-//     ->Args({5000})
-//     ->Unit(benchmark::kMillisecond)
-//     ->UseRealTime();
-
-
-int main(int argc, char** argv) {
-    benchmark::Initialize(&argc, argv);
-    benchmark::RunSpecifiedBenchmarks();
-    
-    // 显式停止 backend
-    if (g_backend) {
+// 清理函数（benchmark结束后调用）
+static void TeardownBackend(const benchmark::State& state) {
+    if (state.thread_index() == 0 && g_backend != nullptr) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
         g_backend->stop();
     }
-    
-    benchmark::Shutdown();
-    return 0;
 }
+
+// ============================================================================
+// Benchmark 1: 写入整数和浮点数
+// 4线程并发，每线程写1M条日志
+// ============================================================================
+static void BM_ConcurrentLogging_IntDouble(benchmark::State& state) {
+    SetupBackend(state);
+    
+    // Reset dropped counter before benchmark
+    if (state.thread_index() == 0) {
+        g_backend->reset_dropped_count();
+    }
+    
+    int i = 42;
+    double j = 3.14159;
+    uint64_t total_cycles = 0;
+    uint64_t iterations = 0;
+    
+    for (auto _ : state) {
+        uint64_t start = rdtsc();
+        LOG_INFO("Thread {} writes int={} double={}", state.thread_index(), i, j);
+        uint64_t end = rdtsc();
+        
+        total_cycles += (end - start);
+        iterations++;
+        i++;
+        j += 0.1;
+    }
+    
+    // 报告平均每次日志的CPU周期数
+    state.counters["cycles_per_log"] = benchmark::Counter(
+        static_cast<double>(total_cycles) / iterations,
+        benchmark::Counter::kAvgThreads
+    );
+    state.counters["total_cycles"] = benchmark::Counter(
+        total_cycles,
+        benchmark::Counter::kIsRate
+    );
+    
+    // 报告丢包率
+    if (state.thread_index() == 0) {
+        uint64_t dropped = g_backend->get_dropped_count();
+        uint64_t total_attempts = iterations * state.threads();
+        double loss_rate = (total_attempts > 0) ? 
+            (static_cast<double>(dropped) / total_attempts * 100.0) : 0.0;
+        
+        state.counters["dropped_msgs"] = benchmark::Counter(
+            static_cast<double>(dropped),
+            benchmark::Counter::kAvgThreads
+        );
+        state.counters["loss_rate_%"] = benchmark::Counter(
+            loss_rate,
+            benchmark::Counter::kAvgThreads
+        );
+    }
+    
+    TeardownBackend(state);
+}
+
+// 注册benchmark：4线程，每线程1M次迭代
+BENCHMARK(BM_ConcurrentLogging_IntDouble)
+    ->Threads(4)
+    ->Iterations(1000000)
+    ->Unit(benchmark::kMillisecond);
+
+// ============================================================================
+// Benchmark 2: 写入字符串
+// 4线程并发，每线程写1M条日志
+// ============================================================================
+static void BM_ConcurrentLogging_String(benchmark::State& state) {
+    SetupBackend(state);
+    
+    // Reset dropped counter before benchmark
+    if (state.thread_index() == 0) {
+        g_backend->reset_dropped_count();
+    }
+    
+    std::string s = "This is a test message with some content";
+    uint64_t total_cycles = 0;
+    uint64_t iterations = 0;
+    
+    for (auto _ : state) {
+        uint64_t start = rdtsc();
+        LOG_INFO("Thread {} writes string: {}", state.thread_index(), s);
+        uint64_t end = rdtsc();
+        
+        total_cycles += (end - start);
+        iterations++;
+    }
+    
+    // 报告平均每次日志的CPU周期数
+    state.counters["cycles_per_log"] = benchmark::Counter(
+        static_cast<double>(total_cycles) / iterations,
+        benchmark::Counter::kAvgThreads
+    );
+    state.counters["total_cycles"] = benchmark::Counter(
+        total_cycles,
+        benchmark::Counter::kIsRate
+    );
+    
+    // 报告丢包率
+    if (state.thread_index() == 0) {
+        uint64_t dropped = g_backend->get_dropped_count();
+        uint64_t total_attempts = iterations * state.threads();
+        double loss_rate = (total_attempts > 0) ? 
+            (static_cast<double>(dropped) / total_attempts * 100.0) : 0.0;
+        
+        state.counters["dropped_msgs"] = benchmark::Counter(
+            static_cast<double>(dropped),
+            benchmark::Counter::kAvgThreads
+        );
+        state.counters["loss_rate_%"] = benchmark::Counter(
+            loss_rate,
+            benchmark::Counter::kAvgThreads
+        );
+    }
+    
+    TeardownBackend(state);
+}
+
+// 注册benchmark：4线程，每线程1M次迭代
+BENCHMARK(BM_ConcurrentLogging_String)
+    ->Threads(4)
+    ->Iterations(1000000)
+    ->Unit(benchmark::kMillisecond);
+
+// ============================================================================
+// Benchmark 3: 混合类型（对比）
+// 4线程并发，每线程1M条日志
+// ============================================================================
+static void BM_ConcurrentLogging_Mixed(benchmark::State& state) {
+    SetupBackend(state);
+    
+    int count = 0;
+    double value = 1.5;
+    std::string name = "worker";
+    
+    for (auto _ : state) {
+        LOG_INFO("Thread {} {} count={} value={}", state.thread_index(), name, count, value);
+        count++;
+        value += 0.5;
+    }
+    
+    TeardownBackend(state);
+}
+
+// 注册benchmark：4线程，每线程1M次迭代
+BENCHMARK(BM_ConcurrentLogging_Mixed)
+    ->Threads(4)
+    ->Iterations(1000000)
+    ->Unit(benchmark::kMillisecond);
+
+// ============================================================================
+// Benchmark 4: 小数据量对比（单线程）
+// ============================================================================
+static void BM_SingleThread_IntDouble(benchmark::State& state) {
+    SetupBackend(state);
+    
+    int i = 0;
+    double j = 0.0;
+    
+    for (auto _ : state) {
+        LOG_INFO("Single thread int={} double={}", i++, j);
+        j += 0.1;
+    }
+    
+    TeardownBackend(state);
+}
+
+BENCHMARK(BM_SingleThread_IntDouble)
+    ->Iterations(100000)
+    ->Unit(benchmark::kMicrosecond);
+
+static void BM_SingleThread_String(benchmark::State& state) {
+    SetupBackend(state);
+    
+    std::string s = "Test message";
+    
+    for (auto _ : state) {
+        LOG_INFO("Single thread string: {}", s);
+    }
+    
+    TeardownBackend(state);
+}
+
+BENCHMARK(BM_SingleThread_String)
+    ->Iterations(100000)
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK_MAIN();

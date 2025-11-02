@@ -43,6 +43,10 @@ public:
      * 
      * This function reserves space in the buffer for writing. The actual write
      * should be done by the caller, followed by a call to commit_write().
+     * 
+     * NOTE: This implementation does NOT handle wrap-around writes.
+     * If a write would cross the buffer boundary, nullptr is returned.
+     * The caller (Queue) should handle this by allocating a new node.
      */
     std::byte* reserve_write(size_t size) {
         if (size == 0 || size > capacity_) {
@@ -60,11 +64,19 @@ public:
             return nullptr;  // Not enough space
         }
 
+        // Calculate position in buffer
+        size_t pos = current_write % capacity_;
+        
+        // CRITICAL: Check if write would wrap around buffer boundary
+        // If so, reject this write (caller should use new node)
+        if (pos + size > capacity_) {
+            return nullptr;  // Would wrap around, need new node
+        }
+
         // Reserve the space by advancing write_pos_
         write_pos_.store(current_write + size, std::memory_order_relaxed);
 
         // Return pointer to the reserved space
-        size_t pos = current_write % capacity_;
         return &buffer_[pos];
     }
 

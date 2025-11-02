@@ -91,27 +91,7 @@ public:
      * Note: Level check should be done at macro level before calling this function
      */
     template<auto Fmt, LogLevel Level, typename... Args>
-    static void log_impl(const Args&... args) {
-        auto timestamp = get_timestamp_ns();
-        // Calculate total size needed (no format string in queue anymore)
-        size_t total_size = sizeof(Metadata) + calculate_args_size(args...);
-
-        // Reserve space in queue
-        Queue& queue = get_thread_queue();
-        std::byte* buffer = queue.reserve_write(total_size);
-        if (buffer == nullptr) {
-            // Queue is full, log message lost
-            // TODO: Add metrics for dropped messages
-            return;
-        }
-
-        // Encode metadata and arguments into buffer using Encoder functions
-        // Level is passed as template parameter
-        encode_log_entry<Fmt, Level>(buffer, timestamp, args...);
-
-        // Commit write
-        queue.commit_write(total_size);
-    }
+    static void log_impl(const Args&... args);
 
 private:
     /**
@@ -162,6 +142,31 @@ inline Queue& Logger::get_thread_queue() {
     } cleanup{queue_ptr};
     
     return *queue_ptr;
+}
+
+// Implementation of log_impl() - must be after Backend is complete
+template<auto Fmt, LogLevel Level, typename... Args>
+void Logger::log_impl(const Args&... args) {
+    auto timestamp = get_timestamp_ns();
+    // Calculate total size needed (no format string in queue anymore)
+    size_t total_size = sizeof(Metadata) + calculate_args_size(args...);
+
+    // Reserve space in queue
+    Queue& queue = get_thread_queue();
+    std::byte* buffer = queue.reserve_write(total_size);
+    if (buffer == nullptr) {
+        // Queue is full, log message lost
+        // Increment dropped messages counter
+        get_backend<MinLevel>().increment_dropped_count();
+        return;
+    }
+
+    // Encode metadata and arguments into buffer using Encoder functions
+    // Level is passed as template parameter
+    encode_log_entry<Fmt, Level>(buffer, timestamp, args...);
+
+    // Commit write
+    queue.commit_write(total_size);
 }
 
 } // namespace logZ

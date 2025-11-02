@@ -1,26 +1,35 @@
 #pragma once
 
 #include <cstddef>
-#include <fstream>
 #include <string>
 #include <chrono>
-#include <iomanip>
-#include <sstream>
 #include <filesystem>
-#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 namespace logZ {
 
 /**
- * @brief Sinker writes data from buffer to disk
- * Handles file I/O and rotation with date-based naming
+ * @brief Sinker writes data using POSIX write() WITHOUT O_DIRECT
+ * 
+ * Performance characteristics:
+ * - Uses page cache (kernel buffering)
+ * - No alignment requirements
+ * - Simpler implementation
+ * - Good for comparison with O_DIRECT version
+ * 
  * Default log directory: ./logs
  * Filename format: YYYY-MM-DD_i.log (i starts from 1)
  */
 class Sinker {
 public:
-    explicit Sinker(const std::string& log_dir = "./logs", size_t max_file_size = 100 * 1024 * 1024)  // 100MB default
-        : log_dir_(log_dir), max_file_size_(max_file_size), current_file_size_(0), daily_counter_(1) {
+    explicit Sinker(const std::string& log_dir = "./logs", size_t max_file_size = 100 * 1024 * 1024)
+        : log_dir_(log_dir), max_file_size_(max_file_size), 
+          current_file_size_(0), daily_counter_(1), fd_(-1) {
+        
         // Create logs directory if not exists
         std::filesystem::create_directories(log_dir_);
         
@@ -40,13 +49,15 @@ public:
     Sinker& operator=(Sinker&&) = delete;
 
     /**
-     * @brief Write data to disk
+     * @brief Write data to disk using POSIX write()
      * @param data Pointer to data buffer
      * @param length Number of bytes to write
      * @return true if successful, false otherwise
+     * 
+     * Simple direct write - no alignment needed, kernel handles buffering
      */
     bool write(const std::byte* data, size_t length) {
-        if (!file_.is_open()) {
+        if (fd_ < 0) {
             return false;
         }
 
@@ -58,22 +69,24 @@ public:
             rotate_file();
         }
 
-        file_.write(reinterpret_cast<const char*>(data), length);
+        // Direct write - no alignment needed
+        ssize_t written = ::write(fd_, data, length);
         
-        if (file_.fail()) {
+        if (written < 0) {
             return false;
         }
 
-        current_file_size_ += length;
-        return true;
+        current_file_size_ += written;
+        return written == static_cast<ssize_t>(length);
     }
 
     /**
      * @brief Flush buffered data to disk
      */
     void flush() {
-        if (file_.is_open()) {
-            file_.flush();
+        if (fd_ >= 0) {
+            // Use fdatasync for better performance (doesn't sync metadata)
+            ::fdatasync(fd_);
         }
     }
 
@@ -88,7 +101,7 @@ public:
      * @brief Check if file is open
      */
     bool is_open() const {
-        return file_.is_open();
+        return fd_ >= 0;
     }
     
     /**
@@ -108,12 +121,12 @@ private:
         std::tm tm_now;
         localtime_r(&time_t_now, &tm_now);
         
-        std::ostringstream oss;
-        oss << std::setfill('0')
-            << std::setw(4) << (tm_now.tm_year + 1900) << "-"
-            << std::setw(2) << (tm_now.tm_mon + 1) << "-"
-            << std::setw(2) << tm_now.tm_mday;
-        return oss.str();
+        char buffer[11];  // "YYYY-MM-DD\0"
+        snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d",
+                tm_now.tm_year + 1900, 
+                tm_now.tm_mon + 1, 
+                tm_now.tm_mday);
+        return std::string(buffer);
     }
     
     /**
@@ -121,8 +134,6 @@ private:
      */
     void update_current_date() {
         current_date_ = get_date_string();
-        
-        // Find the next available counter for today
         find_next_counter();
     }
     
@@ -132,20 +143,18 @@ private:
     void find_next_counter() {
         daily_counter_ = 1;
         
-        // Check existing log files to find the highest counter
         if (std::filesystem::exists(log_dir_)) {
             for (const auto& entry : std::filesystem::directory_iterator(log_dir_)) {
                 if (entry.is_regular_file()) {
                     std::string filename = entry.path().filename().string();
                     
-                    // Check if filename matches pattern: YYYY-MM-DD_i.log
                     if (filename.find(current_date_) == 0) {
-                        // Extract counter
                         size_t underscore_pos = filename.find('_', current_date_.length());
                         size_t dot_pos = filename.find(".log", underscore_pos);
                         
                         if (underscore_pos != std::string::npos && dot_pos != std::string::npos) {
-                            std::string counter_str = filename.substr(underscore_pos + 1, dot_pos - underscore_pos - 1);
+                            std::string counter_str = filename.substr(underscore_pos + 1, 
+                                                                     dot_pos - underscore_pos - 1);
                             try {
                                 size_t counter = std::stoull(counter_str);
                                 if (counter >= daily_counter_) {
@@ -165,9 +174,10 @@ private:
      * @brief Generate filename based on current date and counter
      */
     std::string generate_filename() const {
-        std::ostringstream oss;
-        oss << log_dir_ << "/" << current_date_ << "_" << daily_counter_ << ".log";
-        return oss.str();
+        char buffer[512];
+        snprintf(buffer, sizeof(buffer), "%s/%s_%zu.log", 
+                log_dir_.c_str(), current_date_.c_str(), daily_counter_);
+        return std::string(buffer);
     }
     
     /**
@@ -183,17 +193,28 @@ private:
             open_file();
         }
     }
+
     /**
-     * @brief Open the log file
+     * @brief Open the log file using POSIX open() WITHOUT O_DIRECT
      */
     void open_file() {
         current_filename_ = generate_filename();
-        file_.open(current_filename_, std::ios::binary | std::ios::app);
         
-        if (file_.is_open()) {
+        // Standard POSIX open - uses page cache
+        // O_WRONLY: Write only
+        // O_CREAT: Create if doesn't exist
+        // O_APPEND: Append mode
+        // O_CLOEXEC: Close on exec
+        fd_ = ::open(current_filename_.c_str(), 
+                    O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC,
+                    S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);  // 0644 permissions
+        
+        if (fd_ >= 0) {
             // Get current file size
-            file_.seekp(0, std::ios::end);
-            current_file_size_ = file_.tellp();
+            struct stat st;
+            if (fstat(fd_, &st) == 0) {
+                current_file_size_ = st.st_size;
+            }
         }
     }
 
@@ -201,9 +222,9 @@ private:
      * @brief Close the current log file
      */
     void close_file() {
-        if (file_.is_open()) {
-            file_.flush();
-            file_.close();
+        if (fd_ >= 0) {
+            ::close(fd_);
+            fd_ = -1;
         }
     }
 
@@ -212,11 +233,7 @@ private:
      */
     void rotate_file() {
         close_file();
-
-        // Increment counter for same day
         daily_counter_++;
-        
-        // Open new file with incremented counter
         current_file_size_ = 0;
         open_file();
     }
@@ -227,7 +244,7 @@ private:
     size_t max_file_size_;             // Maximum file size before rotation
     size_t current_file_size_;         // Current file size
     size_t daily_counter_;             // Daily counter (starts from 1)
-    std::ofstream file_;               // Output file stream
+    int fd_;                           // File descriptor for POSIX write
 };
 
 } // namespace logZ

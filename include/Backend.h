@@ -15,7 +15,7 @@
 #include <mutex>
 #include <algorithm>
 #include <unordered_map>
-#include <iostream>
+#include <pthread.h>  // For pthread_setaffinity_np
 
 namespace logZ {
 
@@ -79,7 +79,8 @@ public:
     Backend(const std::string& log_dir = "./logs", size_t buffer_size = 1024 * 1024) 
         : running_(false), 
           output_buffer_(buffer_size), 
-          sinker_(log_dir) {
+          sinker_(log_dir),
+          consumer_thread_() {
         // Initialize both lists to point to the same empty vector
         auto empty = std::make_shared<std::vector<QueueWrapper*>>();
         m_active_list = empty;
@@ -175,13 +176,29 @@ public:
 
     /**
      * @brief Start the backend consumer thread
+     * @param cpu_id CPU core ID to bind to (optional, -1 means no binding)
      */
-    void start() {
+    void start(int cpu_id = -1) {
         if (running_.exchange(true)) {
             return; // Already running
         }
 
-        consumer_thread_ = std::thread([this]() {
+        consumer_thread_ = std::thread([this, cpu_id]() {
+            // Set CPU affinity if cpu_id is specified
+            if (cpu_id >= 0) {
+                cpu_set_t cpuset;
+                CPU_ZERO(&cpuset);
+                CPU_SET(cpu_id, &cpuset);
+                
+                pthread_t thread = pthread_self();
+                int result = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+                
+                if (result != 0) {
+                    // Log error but continue execution
+                    // In production, you might want to handle this differently
+                }
+            }
+            
             this->consume_loop();
         });
     }
@@ -207,7 +224,8 @@ public:
      */
     void flush_to_disk() {
         output_buffer_.flush_to_sinker(&sinker_);
-        sinker_.flush();
+        // Note: flush_to_sinker already calls sinker->flush()
+        // No need to flush again here
     }
 
     /**
@@ -227,6 +245,28 @@ public:
         return output_buffer_.empty();
     }
 
+    /**
+     * @brief Get the number of dropped messages
+     * @return Total count of messages that couldn't be queued
+     */
+    uint64_t get_dropped_count() const {
+        return dropped_messages_.load(std::memory_order_relaxed);
+    }
+
+    /**
+     * @brief Reset the dropped messages counter
+     */
+    void reset_dropped_count() {
+        dropped_messages_.store(0, std::memory_order_relaxed);
+    }
+
+    /**
+     * @brief Increment the dropped messages counter (called by Logger)
+     */
+    void increment_dropped_count() {
+        dropped_messages_.fetch_add(1, std::memory_order_relaxed);
+    }
+
 private:
     /**
      * @brief Synchronize active list with master list
@@ -243,7 +283,7 @@ private:
      * @brief Main consume loop running in backend thread
      */
     void consume_loop() {
-        int flush_counter = 0;
+        static int counter = 0;
         
         while (running_.load(std::memory_order_relaxed)) {
             // Check dirty flag (only atomic load, no lock)
@@ -253,17 +293,12 @@ private:
             
             bool processed_any = process_one_log();
 
-            // Periodically reclaim abandoned queues
-            static int reclaim_counter = 0;
-            if (++reclaim_counter >= 100) {  // Every 100 iterations
-                reclaim_counter = 0;
-                reclaim_abandoned_queues();
-            }
-            
-            // Periodically flush to disk
-            if (++flush_counter >= 1000) {  // Every 1000 iterations
-                flush_counter = 0;
+            // Periodically reclaim abandoned queues and flush
+            // Reduced frequency: every 50000 iterations instead of 10000
+            if (++counter >= 50000) {  // Every 50000 iterations
+                counter = 0;
                 flush_to_disk();
+                reclaim_abandoned_queues();
             }
 
             // If no work was done, sleep briefly to avoid busy-waiting
@@ -471,11 +506,30 @@ private:
     /**
      * @brief Reclaim abandoned queues that are empty
      * Called periodically in consume_loop
+     * 
+     * TWO-PHASE DELETION PROTOCOL:
+     * Phase 1 (this call): Remove from m_master_list, move to m_pending_deletion
+     *   - Updates m_master_list with Copy-on-Write
+     *   - Sets m_dirty flag
+     *   - Moves QueueWrapper to m_pending_deletion (ownership preserved)
+     *   - Backend thread will sync m_active_list in next iteration
+     * 
+     * Phase 2 (next call): Delete queues from m_pending_deletion
+     *   - By this time, m_active_list has been synced (no longer references deleted queues)
+     *   - Safe to actually destroy the Queue objects
+     * 
+     * This ensures process_one_log() never accesses deleted memory
      */
     void reclaim_abandoned_queues() {
         std::lock_guard<std::mutex> lock(m_writer_mutex);
         
-        // Find abandoned and empty queues
+        // Phase 2: Delete previously marked queues
+        // At this point, m_active_list has been synced and no longer references them
+        if (!m_pending_deletion.empty()) {
+            m_pending_deletion.clear();  // Destroy all unique_ptrs -> Queues deleted
+        }
+        
+        // Phase 1: Find abandoned and empty queues
         std::vector<QueueWrapper*> to_reclaim;
         for (auto& wrapper_ptr : m_queue_pool) {
             if (wrapper_ptr->abandoned.load(std::memory_order_acquire) &&
@@ -498,19 +552,23 @@ private:
         m_master_list = new_master;
         m_dirty.store(true, std::memory_order_release);
         
-        // Remove from lookup maps and pool
+        // Move to pending deletion (ownership transfer from m_queue_pool)
         for (QueueWrapper* wrapper : to_reclaim) {
             m_queue_lookup.erase(wrapper->queue.get());
             
-            // Remove from pool (this destroys the unique_ptr -> Queue deleted)
-            m_queue_pool.erase(
-                std::remove_if(m_queue_pool.begin(), m_queue_pool.end(),
-                    [wrapper](const std::unique_ptr<QueueWrapper>& ptr) {
-                        return ptr.get() == wrapper;
-                    }),
-                m_queue_pool.end()
-            );
+            // Find in pool and move to pending
+            auto it = std::find_if(m_queue_pool.begin(), m_queue_pool.end(),
+                [wrapper](const std::unique_ptr<QueueWrapper>& ptr) {
+                    return ptr.get() == wrapper;
+                });
+            
+            if (it != m_queue_pool.end()) {
+                m_pending_deletion.push_back(std::move(*it));  // Transfer ownership
+                m_queue_pool.erase(it);
+            }
         }
+        
+        // Queue will be deleted in NEXT call after m_active_list syncs
     }
     
     /**
@@ -549,9 +607,13 @@ private:
     Sinker sinker_;                        // File sinker for writing to disk
     std::thread consumer_thread_;          // Backend consumer thread
     
+    // Statistics
+    std::atomic<uint64_t> dropped_messages_{0};  // Counter for dropped messages
+    
     // Queue ownership and management
     std::vector<std::unique_ptr<QueueWrapper>> m_queue_pool;  // Backend owns all Queues
     std::unordered_map<Queue*, QueueWrapper*> m_queue_lookup; // Fast lookup: Queue* -> Wrapper
+    std::vector<std::unique_ptr<QueueWrapper>> m_pending_deletion; // Queues marked for deletion (two-phase)
     
     // Double-buffering for lock-free traversal
     std::shared_ptr<std::vector<QueueWrapper*>> m_active_list;   // Backend's private list

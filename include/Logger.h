@@ -113,36 +113,35 @@ namespace logZ {
 
 // Implementation of get_thread_queue() - must be after Backend is complete
 inline Queue& Logger::get_thread_queue() {
-    // Thread-local raw pointer (Borrower)
-    static thread_local Queue* queue_ptr = nullptr;
+    // 🔥 优化: 合并为单个TLS结构体,减少TLS访问次数
+    struct ThreadLocalData {
+        Queue* queue_ptr = nullptr;
+        
+        ~ThreadLocalData() {
+            if (queue_ptr) {
+                auto& backend = Logger::get_backend<MinLevel>();
+                backend.mark_queue_abandoned(queue_ptr);
+            }
+            // Note: DO NOT delete queue!
+            // Backend owns the Queue and will destroy it after draining
+        }
+    };
+    
+    static thread_local ThreadLocalData tls_data;
     
     // First call: allocate Queue from Backend
     // Hot path: Usually already initialized
-    if (queue_ptr == nullptr) [[unlikely]] {
+    if (tls_data.queue_ptr == nullptr) [[unlikely]] {
         auto& backend = get_backend<MinLevel>();
-        queue_ptr = backend.allocate_queue_for_thread();
+        tls_data.queue_ptr = backend.allocate_queue_for_thread();
         
-        if (!queue_ptr) [[unlikely]] {
+        if (!tls_data.queue_ptr) [[unlikely]] {
             // Should never happen, but handle gracefully
             throw std::runtime_error("Failed to allocate queue from Backend");
         }
     }
     
-    // RAII cleanup: mark Queue as abandoned when thread exits
-    static thread_local struct Cleanup {
-        Queue* q;
-        
-        ~Cleanup() {
-            if (q) {
-                auto& backend = Logger::get_backend<MinLevel>();
-                backend.mark_queue_abandoned(q);
-            }
-            // Note: DO NOT delete queue!
-            // Backend owns the Queue and will destroy it after draining
-        }
-    } cleanup{queue_ptr};
-    
-    return *queue_ptr;
+    return *tls_data.queue_ptr;
 }
 
 // Implementation of log_impl() - must be after Backend is complete

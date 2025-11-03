@@ -43,4 +43,3 @@ cc_test(
     linkopts = ["-pthread"],
     copts = ["-std=c++20"],
 )
-

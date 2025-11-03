@@ -27,6 +27,16 @@ namespace logZ {
  * void (*)(const std::byte*, StringRingBuffer::StringWriter&)
  */
 
+// Helper trait to detect FixedString (must match Encoder.h)
+template<typename T>
+struct is_fixed_string : std::false_type {};
+
+template<size_t N>
+struct is_fixed_string<FixedString<N>> : std::true_type {};
+
+template<typename T>
+inline constexpr bool is_fixed_string_v = is_fixed_string<T>::value;
+
 /**
  * @brief Helper to decode and extract value from a single argument
  * @tparam T Type to decode
@@ -38,15 +48,15 @@ struct DecodedValue {
     using RawT = std::remove_cv_t<std::remove_reference_t<T>>;
     
     static auto decode_impl(const std::byte* ptr) {
-        // Case 1: POD types (int, double, etc.) - direct memory read
+        // Case 1: Arithmetic types (int, double, enum, etc.) - direct memory read
         if constexpr (std::is_arithmetic_v<RawT> || std::is_enum_v<RawT>) {
             RawT value;
             std::memcpy(&value, ptr, sizeof(RawT));
             return std::make_pair(value, ptr + sizeof(RawT));
         }
-        // Case 2: Compile-time string literals - read length (2 bytes) + pointer (8 bytes)
-        else if constexpr (std::is_array_v<RawT> && 
-                          std::is_same_v<std::remove_extent_t<RawT>, char>) {
+        // Case 2: Compile-time string literals (FixedString)
+        // Stored as length (2 bytes) + pointer (8 bytes)
+        else if constexpr (is_fixed_string_v<RawT>) {
             unsigned short len = 0;
             std::memcpy(&len, ptr, sizeof(unsigned short));
             ptr += sizeof(unsigned short);
@@ -55,32 +65,23 @@ struct DecodedValue {
             std::memcpy(&str_ptr, ptr, sizeof(const char*));
             ptr += sizeof(const char*);
             
-            return std::make_pair(str_ptr, ptr);
+            // Return string_view pointing to the literal
+            return std::make_pair(std::string_view(str_ptr, len), ptr);
         }
-        // Case 3: std::string - read length (2 bytes) + string content (no '\0')
-        else if constexpr (std::is_same_v<RawT, std::string>) {
+        // Case 3: Runtime strings (char[], std::string, std::string_view, const char*)
+        // Stored as length (2 bytes) + content
+        else if constexpr (
+            (std::is_array_v<RawT> && std::is_same_v<std::remove_extent_t<RawT>, char>) ||
+            std::is_same_v<RawT, std::string> ||
+            std::is_same_v<RawT, std::string_view> ||
+            (std::is_pointer_v<RawT> && std::is_same_v<std::remove_cv_t<std::remove_pointer_t<RawT>>, char>)
+        ) {
             unsigned short len = 0;
             std::memcpy(&len, ptr, sizeof(unsigned short));
             ptr += sizeof(unsigned short);
+            
             const char* str = reinterpret_cast<const char*>(ptr);
-            return std::make_pair(std::string_view(str, len), ptr + len); // Use string_view with explicit length
-        }
-        // Case 4: std::string_view - read length (2 bytes) + string content (no '\0')
-        else if constexpr (std::is_same_v<RawT, std::string_view>) {
-            unsigned short len = 0;
-            std::memcpy(&len, ptr, sizeof(unsigned short));
-            ptr += sizeof(unsigned short);
-            const char* str = reinterpret_cast<const char*>(ptr);
-            return std::make_pair(std::string_view(str, len), ptr + len); // Use string_view with explicit length
-        }
-        // Case 5: Runtime C strings - read length (2 bytes) + string content (no '\0')
-        else if constexpr (std::is_pointer_v<RawT> && 
-                          std::is_same_v<std::remove_cv_t<std::remove_pointer_t<RawT>>, char>) {
-            unsigned short len = 0;
-            std::memcpy(&len, ptr, sizeof(unsigned short));
-            ptr += sizeof(unsigned short);
-            const char* str = reinterpret_cast<const char*>(ptr);
-            return std::make_pair(std::string_view(str, len), ptr + len); // Use string_view with explicit length
+            return std::make_pair(std::string_view(str, len), ptr + len);
         }
         // Default case for other types
         else {

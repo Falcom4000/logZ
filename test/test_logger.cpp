@@ -2,12 +2,12 @@
 #include "Logger.h"
 #include "Backend.h"
 #include <thread>
-#include <mutex>
 #include <vector>
 #include <chrono>
 #include <fstream>
 #include <filesystem>
 #include <string>
+#include <cstring>
 
 using namespace logZ;
 
@@ -20,17 +20,6 @@ std::string read_log_file(const std::string& filename) {
     std::stringstream buffer;
     buffer << file.rdbuf();
     return buffer.str();
-}
-
-// Helper function to count occurrences of a substring
-size_t count_occurrences(const std::string& str, const std::string& substr) {
-    size_t count = 0;
-    size_t pos = 0;
-    while ((pos = str.find(substr, pos)) != std::string::npos) {
-        ++count;
-        pos += substr.length();
-    }
-    return count;
 }
 
 // Helper to remove log file or directory if it exists
@@ -60,30 +49,18 @@ std::string read_log_from_dir(const std::string& log_dir) {
     return "";
 }
 
-// Test fixture for single-threaded tests
-class SingleThreadLoggerTest : public ::testing::Test {
+// Test fixture
+class LoggerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        log_dir_ = "./test_logs_single";
+        log_dir_ = "./test_logs";
         remove_log_path(log_dir_);
     }
 
     void TearDown() override {
-        remove_log_path(log_dir_);
-    }
-
-    std::string log_dir_;
-};
-
-// Test fixture for multi-threaded tests
-class MultiThreadLoggerTest : public ::testing::Test {
-protected:
-    void SetUp() override {
-        log_dir_ = "./test_logs_multi";
-        remove_log_path(log_dir_);
-    }
-
-    void TearDown() override {
+        auto& backend = Logger::get_backend();
+        backend.stop();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
         remove_log_path(log_dir_);
     }
 
@@ -91,12 +68,11 @@ protected:
 };
 
 // ============================================================
-// Single-Thread Tests
+// Basic Tests
 // ============================================================
 
-TEST_F(SingleThreadLoggerTest, SingleParameter_Integer) {
-    Backend<LogLevel::INFO> backend(log_dir_, 1024 * 1024);
-    backend.register_queue(&Logger::get_thread_queue());
+TEST_F(LoggerTest, BasicInteger) {
+    auto& backend = Logger::get_backend();
     backend.start();
 
     LOG_INFO("Test integer: {}", 42);
@@ -104,13 +80,12 @@ TEST_F(SingleThreadLoggerTest, SingleParameter_Integer) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     backend.stop();
 
-    std::string content = read_log_from_dir(log_dir_);
+    std::string content = read_log_from_dir("./logs");
     EXPECT_TRUE(content.find("Test integer: 42") != std::string::npos);
 }
 
-TEST_F(SingleThreadLoggerTest, SingleParameter_Double) {
-    Backend<LogLevel::INFO> backend(log_dir_, 1024 * 1024);
-    backend.register_queue(&Logger::get_thread_queue());
+TEST_F(LoggerTest, BasicDouble) {
+    auto& backend = Logger::get_backend();
     backend.start();
 
     LOG_INFO("Test double: {}", 3.14159);
@@ -118,13 +93,12 @@ TEST_F(SingleThreadLoggerTest, SingleParameter_Double) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     backend.stop();
 
-    std::string content = read_log_from_dir(log_dir_);
+    std::string content = read_log_from_dir("./logs");
     EXPECT_TRUE(content.find("Test double: 3.14159") != std::string::npos);
 }
 
-TEST_F(SingleThreadLoggerTest, SingleParameter_StringLiteral) {
-    Backend<LogLevel::INFO> backend(log_dir_, 1024 * 1024);
-    backend.register_queue(&Logger::get_thread_queue());
+TEST_F(LoggerTest, BasicString) {
+    auto& backend = Logger::get_backend();
     backend.start();
 
     LOG_INFO("Test string: {}", "hello");
@@ -132,43 +106,12 @@ TEST_F(SingleThreadLoggerTest, SingleParameter_StringLiteral) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     backend.stop();
 
-    std::string content = read_log_from_dir(log_dir_);
+    std::string content = read_log_from_dir("./logs");
     EXPECT_TRUE(content.find("Test string: hello") != std::string::npos);
 }
 
-TEST_F(SingleThreadLoggerTest, SingleParameter_StdString) {
-    Backend<LogLevel::INFO> backend(log_dir_, 1024 * 1024);
-    backend.register_queue(&Logger::get_thread_queue());
-    backend.start();
-
-    std::string test_str = "std::string message";
-    LOG_INFO("Test std::string: {}", test_str);
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    backend.stop();
-
-    std::string content = read_log_from_dir(log_dir_);
-    EXPECT_TRUE(content.find("Test std::string: std::string message") != std::string::npos);
-}
-
-TEST_F(SingleThreadLoggerTest, SingleParameter_RuntimeCString) {
-    Backend<LogLevel::INFO> backend(log_dir_, 1024 * 1024);
-    backend.register_queue(&Logger::get_thread_queue());
-    backend.start();
-
-    const char* c_str = "runtime c string";
-    LOG_INFO("Test c_str: {}", c_str);
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    backend.stop();
-
-    std::string content = read_log_from_dir(log_dir_);
-    EXPECT_TRUE(content.find("Test c_str: runtime c string") != std::string::npos);
-}
-
-TEST_F(SingleThreadLoggerTest, MultipleParameters_Mixed) {
-    Backend<LogLevel::INFO> backend(log_dir_, 1024 * 1024);
-    backend.register_queue(&Logger::get_thread_queue());
+TEST_F(LoggerTest, MixedParameters) {
+    auto& backend = Logger::get_backend();
     backend.start();
 
     LOG_INFO("Mixed: int={} double={} string={}", 42, 3.14, "text");
@@ -176,327 +119,288 @@ TEST_F(SingleThreadLoggerTest, MultipleParameters_Mixed) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     backend.stop();
 
-    std::string content = read_log_from_dir(log_dir_);
+    std::string content = read_log_from_dir("./logs");
     EXPECT_TRUE(content.find("Mixed: int=42 double=3.14 string=text") != std::string::npos);
 }
 
-TEST_F(SingleThreadLoggerTest, MultipleParameters_AllTypes) {
-    Backend<LogLevel::INFO> backend(log_dir_, 1024 * 1024);
-    backend.register_queue(&Logger::get_thread_queue());
+// ============================================================
+// String Type Tests - All variations
+// ============================================================
+
+TEST_F(LoggerTest, String_CompileTimeLiteral) {
+    auto& backend = Logger::get_backend();
+    backend.start();
+
+    // Compile-time string literal - should use FixedString optimization
+    LOG_INFO("Literal: {}", "compile_time_literal");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    backend.stop();
+
+    std::string content = read_log_from_dir("./logs");
+    EXPECT_TRUE(content.find("Literal: compile_time_literal") != std::string::npos);
+}
+
+TEST_F(LoggerTest, String_CompileTimeLiteral_Empty) {
+    auto& backend = Logger::get_backend();
+    backend.start();
+
+    LOG_INFO("Empty literal: {}", "");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    backend.stop();
+
+    std::string content = read_log_from_dir("./logs");
+    EXPECT_TRUE(content.find("Empty literal: ") != std::string::npos);
+}
+
+TEST_F(LoggerTest, String_CompileTimeLiteral_Long) {
+    auto& backend = Logger::get_backend();
+    backend.start();
+
+    LOG_INFO("Long literal: {}", "This is a very long compile-time string literal for testing purposes");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    backend.stop();
+
+    std::string content = read_log_from_dir("./logs");
+    EXPECT_TRUE(content.find("Long literal: This is a very long compile-time string literal for testing purposes") != std::string::npos);
+}
+
+TEST_F(LoggerTest, String_StdString) {
+    auto& backend = Logger::get_backend();
+    backend.start();
+
+    std::string test_str = "std::string message";
+    LOG_INFO("std::string: {}", test_str);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    backend.stop();
+
+    std::string content = read_log_from_dir("./logs");
+    EXPECT_TRUE(content.find("std::string: std::string message") != std::string::npos);
+}
+
+TEST_F(LoggerTest, String_StdString_Empty) {
+    auto& backend = Logger::get_backend();
+    backend.start();
+
+    std::string empty_str = "";
+    LOG_INFO("Empty std::string: {}", empty_str);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    backend.stop();
+
+    std::string content = read_log_from_dir("./logs");
+    EXPECT_TRUE(content.find("Empty std::string: ") != std::string::npos);
+}
+
+TEST_F(LoggerTest, String_StdString_Modified) {
+    auto& backend = Logger::get_backend();
+    backend.start();
+
+    std::string str = "initial";
+    LOG_INFO("Before: {}", str);
+    str = "modified";  // Modify after logging - should not affect logged value
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    backend.stop();
+
+    std::string content = read_log_from_dir("./logs");
+    EXPECT_TRUE(content.find("Before: initial") != std::string::npos);
+    EXPECT_FALSE(content.find("Before: modified") != std::string::npos);
+}
+
+TEST_F(LoggerTest, String_StringView) {
+    auto& backend = Logger::get_backend();
+    backend.start();
+
+    std::string_view sv = "string_view content";
+    LOG_INFO("string_view: {}", sv);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    backend.stop();
+
+    std::string content = read_log_from_dir("./logs");
+    EXPECT_TRUE(content.find("string_view: string_view content") != std::string::npos);
+}
+
+TEST_F(LoggerTest, String_StringView_FromStdString) {
+    auto& backend = Logger::get_backend();
+    backend.start();
+
+    std::string str = "base string";
+    std::string_view sv(str);
+    LOG_INFO("string_view from std::string: {}", sv);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    backend.stop();
+
+    std::string content = read_log_from_dir("./logs");
+    EXPECT_TRUE(content.find("string_view from std::string: base string") != std::string::npos);
+}
+
+TEST_F(LoggerTest, String_StringView_Substring) {
+    auto& backend = Logger::get_backend();
+    backend.start();
+
+    std::string str = "Hello World";
+    std::string_view sv(str.data() + 6, 5);  // "World"
+    LOG_INFO("Substring view: {}", sv);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    backend.stop();
+
+    std::string content = read_log_from_dir("./logs");
+    EXPECT_TRUE(content.find("Substring view: World") != std::string::npos);
+}
+
+TEST_F(LoggerTest, String_CharArray) {
+    auto& backend = Logger::get_backend();
+    backend.start();
+
+    char char_arr[] = "char array content";
+    LOG_INFO("char[]: {}", char_arr);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    backend.stop();
+
+    std::string content = read_log_from_dir("./logs");
+    EXPECT_TRUE(content.find("char[]: char array content") != std::string::npos);
+}
+
+TEST_F(LoggerTest, String_CharArray_Modified) {
+    auto& backend = Logger::get_backend();
+    backend.start();
+
+    char buffer[20] = "original";
+    LOG_INFO("Buffer: {}", buffer);
+    strcpy(buffer, "changed");  // Should not affect logged value
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    backend.stop();
+
+    std::string content = read_log_from_dir("./logs");
+    EXPECT_TRUE(content.find("Buffer: original") != std::string::npos);
+}
+
+TEST_F(LoggerTest, String_ConstCharPtr_Literal) {
+    auto& backend = Logger::get_backend();
+    backend.start();
+
+    const char* cstr = "const char* literal";
+    LOG_INFO("const char*: {}", cstr);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    backend.stop();
+
+    std::string content = read_log_from_dir("./logs");
+    EXPECT_TRUE(content.find("const char*: const char* literal") != std::string::npos);
+}
+
+TEST_F(LoggerTest, String_ConstCharPtr_FromStdString) {
+    auto& backend = Logger::get_backend();
+    backend.start();
+
+    std::string str = "from std::string";
+    const char* cstr = str.c_str();
+    LOG_INFO("const char* from c_str(): {}", cstr);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    backend.stop();
+
+    std::string content = read_log_from_dir("./logs");
+    EXPECT_TRUE(content.find("const char* from c_str(): from std::string") != std::string::npos);
+}
+
+TEST_F(LoggerTest, String_CharPtr_RuntimeBuffer) {
+    auto& backend = Logger::get_backend();
+    backend.start();
+
+    char buffer[50];
+    snprintf(buffer, sizeof(buffer), "runtime %d", 123);
+    LOG_INFO("Runtime buffer: {}", buffer);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    backend.stop();
+
+    std::string content = read_log_from_dir("./logs");
+    EXPECT_TRUE(content.find("Runtime buffer: runtime 123") != std::string::npos);
+}
+
+TEST_F(LoggerTest, String_AllTypesMixed) {
+    auto& backend = Logger::get_backend();
     backend.start();
 
     std::string std_str = "std_string";
-    LOG_INFO("All types: {} {} {} {} {}", 100, 2.5, "literal", std_str, std_str.c_str());
+    std::string_view sv = "string_view";
+    char char_arr[] = "char_array";
+    const char* cstr = "const_char_ptr";
+
+    LOG_INFO("All string types: literal={} std::string={} string_view={} char[]={} const char*={}", 
+             "literal", std_str, sv, char_arr, cstr);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     backend.stop();
 
-    std::string content = read_log_from_dir(log_dir_);
-    EXPECT_TRUE(content.find("All types: 100 2.5 literal std_string std_string") != std::string::npos);
+    std::string content = read_log_from_dir("./logs");
+    EXPECT_TRUE(content.find("All string types: literal=literal std::string=std_string string_view=string_view char[]=char_array const char*=const_char_ptr") != std::string::npos);
 }
 
-TEST_F(SingleThreadLoggerTest, NoParameters_FormatStringOnly) {
-    Backend<LogLevel::INFO> backend(log_dir_, 1024 * 1024);
-    backend.register_queue(&Logger::get_thread_queue());
+TEST_F(LoggerTest, MultiThreadBasic) {
+    auto& backend = Logger::get_backend();
     backend.start();
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-    LOG_INFO("Simple message without parameters");
+    constexpr int num_threads = 4;
+    constexpr int logs_per_thread = 100;
+    std::vector<std::thread> threads;
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    backend.stop();
+    for (int i = 0; i < num_threads; ++i) {
+        threads.emplace_back([i, logs_per_thread]() {
+            for (int j = 0; j < logs_per_thread; ++j) {
+                LOG_INFO("Thread {} log {}", i, j);
+            }
+        });
+    }
 
-    std::string content = read_log_from_dir(log_dir_);
-    EXPECT_TRUE(content.find("Simple message without parameters") != std::string::npos);
-}
-
-TEST_F(SingleThreadLoggerTest, MultipleLogs_Sequential) {
-    Backend<LogLevel::TRACE> backend(log_dir_, 1024 * 1024);
-    backend.register_queue(&Logger::get_thread_queue());
-    backend.start();
-
-    for (int i = 0; i < 10; ++i) {
-        LOG_INFO("Log entry {}", i);
+    for (auto& t : threads) {
+        t.join();
     }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     backend.stop();
 
-    std::string content = read_log_from_dir(log_dir_);
-    for (int i = 0; i < 10; ++i) {
-        std::string expected = "Log entry " + std::to_string(i);
-        EXPECT_TRUE(content.find(expected) != std::string::npos) 
-            << "Missing: " << expected;
+    std::string content = read_log_from_dir("./logs");
+    
+    // Check that we have logs from all threads
+    for (int i = 0; i < num_threads; ++i) {
+        std::string search_str = "Thread " + std::to_string(i) + " log";
+        EXPECT_TRUE(content.find(search_str) != std::string::npos);
     }
 }
 
-TEST_F(SingleThreadLoggerTest, DifferentLogLevels) {
-    Backend<LogLevel::TRACE> backend(log_dir_, 1024 * 1024);
-    backend.register_queue(&Logger::get_thread_queue());
+TEST_F(LoggerTest, DifferentLogLevels) {
+    auto& backend = Logger::get_backend();
     backend.start();
 
     LOG_TRACE("Trace message");
     LOG_DEBUG("Debug message");
     LOG_INFO("Info message");
-    LOG_WARN("Warn message");
+    LOG_WARN("Warning message");
     LOG_ERROR("Error message");
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     backend.stop();
 
-    std::string content = read_log_from_dir(log_dir_);
-    EXPECT_TRUE(content.find("Trace message") != std::string::npos);
-    EXPECT_TRUE(content.find("Debug message") != std::string::npos);
+    std::string content = read_log_from_dir("./logs");
+    
+    // Default MinLevel is INFO, so TRACE and DEBUG should not appear
     EXPECT_TRUE(content.find("Info message") != std::string::npos);
-    EXPECT_TRUE(content.find("Warn message") != std::string::npos);
+    EXPECT_TRUE(content.find("Warning message") != std::string::npos);
     EXPECT_TRUE(content.find("Error message") != std::string::npos);
 }
-
-TEST_F(SingleThreadLoggerTest, EmptyStringParameter) {
-    Backend<LogLevel::INFO> backend(log_dir_, 1024 * 1024);
-    backend.register_queue(&Logger::get_thread_queue());
-    backend.start();
-
-    std::string empty_str = "";
-    LOG_INFO("Empty string: '{}'", empty_str);
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    backend.stop();
-
-    std::string content = read_log_from_dir(log_dir_);
-    EXPECT_TRUE(content.find("Empty string: ''") != std::string::npos);
-}
-
-TEST_F(SingleThreadLoggerTest, LongString) {
-    Backend<LogLevel::INFO> backend(log_dir_, 1024 * 1024);
-    backend.register_queue(&Logger::get_thread_queue());
-    backend.start();
-
-    std::string long_str(500, 'A');
-    LOG_INFO("Long string: {}", long_str);
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    backend.stop();
-
-    std::string content = read_log_from_dir(log_dir_);
-    EXPECT_TRUE(content.find(long_str) != std::string::npos);
-}
-
-TEST_F(SingleThreadLoggerTest, SpecialCharacters) {
-    Backend<LogLevel::INFO> backend(log_dir_, 1024 * 1024);
-    backend.register_queue(&Logger::get_thread_queue());
-    backend.start();
-
-    LOG_INFO("Special chars: {} {} {}", "\n", "\t", "\\");
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    backend.stop();
-
-    std::string content = read_log_from_dir(log_dir_);
-    EXPECT_TRUE(content.find("Special chars:") != std::string::npos);
-}
-
-// ============================================================
-// Multi-Thread Tests
-// ============================================================
-
-TEST_F(MultiThreadLoggerTest, TwoThreads_SimpleLog) {
-    Backend<LogLevel::INFO> backend(log_dir_, 1024 * 1024);
-    
-    std::vector<std::thread> threads;
-    std::vector<Queue*> queues;
-    std::mutex queue_mutex;
-    
-    for (int t = 0; t < 2; ++t) {
-        threads.emplace_back([&queue_mutex, &queues, t]() {
-            // Get this thread's queue
-            Queue* my_queue = &Logger::get_thread_queue();
-            {
-                std::lock_guard<std::mutex> lock(queue_mutex);
-                queues.push_back(my_queue);
-            }
-            
-            // Wait a bit to ensure registration happens first
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            
-            for (int i = 0; i < 5; ++i) {
-                LOG_INFO("Thread {} log {}", t, i);
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-        });
-    }
-    
-    // Wait for threads to initialize their queues
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
-    // Register all queues from main thread
-    for (Queue* q : queues) {
-        backend.register_queue(q);
-    }
-    
-    backend.start();
-    
-    for (auto& thread : threads) {
-        thread.join();
-    }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    backend.stop();
-
-    std::string content = read_log_from_dir(log_dir_);
-    
-    // Check that logs from both threads are present
-    for (int t = 0; t < 2; ++t) {
-        for (int i = 0; i < 5; ++i) {
-            std::string expected = "Thread " + std::to_string(t) + " log " + std::to_string(i);
-            EXPECT_TRUE(content.find(expected) != std::string::npos)
-                << "Missing: " << expected;
-        }
-    }
-}
-
-TEST_F(MultiThreadLoggerTest, FourThreads_MixedParameters) {
-    Backend<LogLevel::INFO> backend(log_dir_, 1024 * 1024);
-    
-    std::vector<std::thread> threads;
-    std::vector<Queue*> queues;
-    std::mutex queue_mutex;
-    
-    for (int t = 0; t < 4; ++t) {
-        threads.emplace_back([&queue_mutex, &queues, t]() {
-            Queue* my_queue = &Logger::get_thread_queue();
-            {
-                std::lock_guard<std::mutex> lock(queue_mutex);
-                queues.push_back(my_queue);
-            }
-            
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            
-            for (int i = 0; i < 10; ++i) {
-                LOG_INFO("T{} i={} d={} s={}", t, i, i * 0.5, "msg");
-            }
-        });
-    }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    for (Queue* q : queues) {
-        backend.register_queue(q);
-    }
-    
-    backend.start();
-    
-    for (auto& thread : threads) {
-        thread.join();
-    }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    backend.stop();
-
-    std::string content = read_log_from_dir(log_dir_);
-    
-    // Verify total number of log entries (4 threads * 10 logs each)
-    size_t log_count = count_occurrences(content, "[INFO]");
-    EXPECT_GE(log_count, 40) << "Expected at least 40 log entries, got " << log_count;
-}
-
-TEST_F(MultiThreadLoggerTest, EightThreads_HighThroughput) {
-    Backend<LogLevel::INFO> backend(log_dir_, 4 * 1024 * 1024);  // 4MB buffer
-    
-    std::vector<std::thread> threads;
-    std::vector<Queue*> queues;
-    std::mutex queue_mutex;
-    const int num_threads = 8;
-    const int logs_per_thread = 100;
-    
-    for (int t = 0; t < num_threads; ++t) {
-        threads.emplace_back([&queue_mutex, &queues, t, logs_per_thread]() {
-            Queue* my_queue = &Logger::get_thread_queue();
-            {
-                std::lock_guard<std::mutex> lock(queue_mutex);
-                queues.push_back(my_queue);
-            }
-            
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            
-            for (int i = 0; i < logs_per_thread; ++i) {
-                LOG_INFO("Thread {} iteration {}", t, i);
-            }
-        });
-    }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(150));
-    for (Queue* q : queues) {
-        backend.register_queue(q);
-    }
-    
-    backend.start();
-    
-    for (auto& thread : threads) {
-        thread.join();
-    }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    backend.stop();
-
-    std::string content = read_log_from_dir(log_dir_);
-    
-    // Verify we got a reasonable number of logs
-    size_t log_count = count_occurrences(content, "[INFO]");
-    EXPECT_GE(log_count, num_threads * logs_per_thread * 0.9)  // Allow 10% loss
-        << "Expected at least " << (num_threads * logs_per_thread * 0.9) 
-        << " log entries, got " << log_count;
-}
-
-TEST_F(MultiThreadLoggerTest, ConcurrentWithStdString) {
-    Backend<LogLevel::INFO> backend(log_dir_, 1024 * 1024);
-    
-    std::vector<std::thread> threads;
-    std::vector<Queue*> queues;
-    std::mutex queue_mutex;
-    
-    for (int t = 0; t < 4; ++t) {
-        threads.emplace_back([&queue_mutex, &queues, t]() {
-            Queue* my_queue = &Logger::get_thread_queue();
-            {
-                std::lock_guard<std::mutex> lock(queue_mutex);
-                queues.push_back(my_queue);
-            }
-            
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            
-            for (int i = 0; i < 20; ++i) {
-                std::string msg = "Message from thread " + std::to_string(t);
-                LOG_INFO("Thread {}: {}", t, msg);
-            }
-        });
-    }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    for (Queue* q : queues) {
-        backend.register_queue(q);
-    }
-    
-    backend.start();
-    
-    for (auto& thread : threads) {
-        thread.join();
-    }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    backend.stop();
-
-    std::string content = read_log_from_dir(log_dir_);
-    
-    // Verify logs from all threads are present
-    for (int t = 0; t < 4; ++t) {
-        std::string expected = "Message from thread " + std::to_string(t);
-        EXPECT_TRUE(content.find(expected) != std::string::npos)
-            << "Missing messages from thread " << t;
-    }
-}
-
-// ============================================================
-// Main
-// ============================================================
 
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);

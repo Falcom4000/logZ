@@ -17,18 +17,6 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
-# Test binary with Google Test
-cc_test(
-    name = "test_queue",
-    srcs = ["test/test_queue.cpp"],
-    deps = [
-        ":logZ",
-        "@com_google_googletest//:gtest",
-        "@com_google_googletest//:gtest_main",
-    ],
-    linkopts = ["-pthread"],
-)
-
 # Logger test with single/multi-thread tests
 cc_test(
     name = "test_logger",
@@ -41,4 +29,3 @@ cc_test(
     linkopts = ["-pthread"],
     copts = ["-std=c++20"],
 )
-

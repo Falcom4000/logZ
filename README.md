@@ -1,381 +1,424 @@
-# logZ - 高性能异步日志系统
+# logZ - 高性能异步日志库
 
-一个基于C++20的超低延迟、无锁、异步日志库，专为高性能系统设计。
+## 项目背景
 
-## 📋 项目背景
+logZ 是一个专为**低延迟、高吞吐量**场景设计的 C++ 异步日志库。在高频交易、游戏服务器、实时系统等对性能要求极高的应用中，传统的同步日志库会显著影响主线程性能。logZ 通过以下设计理念解决这些问题：
 
-logZ是一个追求极致性能的日志系统，设计目标是在多线程高并发场景下提供纳秒级的日志记录延迟。系统采用生产者-消费者模型，通过无锁队列和异步I/O技术，将日志记录对业务线程的影响降到最低。
+### 核心目标
+- **超低延迟**：日志调用对热路径（hot path）的影响降至最低（通常 < 100 CPU cycles）
+- **无锁设计**：生产者线程完全无锁，避免锁竞争
+- **零拷贝**：格式化和 I/O 操作异步执行，不阻塞业务线程
+- **类型安全**：编译期类型检查和格式化字符串验证
+- **可扩展性**：支持多线程并发写入，自动队列管理
 
-### 核心特性
+---
 
-- **超低延迟**：P50延迟约30ns，P99延迟约80-400ns（取决于日志类型）
-- **无锁设计**：生产者端完全无锁，避免线程竞争
-- **异步I/O**：使用O_DIRECT绕过页缓存，减少系统调用开销
-- **编译期优化**：基于模板元编程，格式化字符串编译期解析
-- **零拷贝**：环形缓冲区设计，最小化内存拷贝
-- **类型安全**：编译期类型检查，支持基本类型和std::string
+## 设计框架
 
-## 🏗️ 架构设计
-
-### 整体架构
+### 架构概览
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        业务线程 (Producers)                      │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
-│  │ Thread 0 │  │ Thread 1 │  │ Thread 2 │  │ Thread 3 │       │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘       │
-│       │             │             │             │               │
-│       └─────────────┴─────────────┴─────────────┘               │
-│                         │                                        │
-│                         ↓                                        │
-│                 ┌───────────────┐                                │
-│                 │ Logger (前端)  │                                │
-│                 │  - log_impl() │  < 无锁操作，编译期优化 >      │
-│                 └───────┬───────┘                                │
-│                         │                                        │
-│                         ↓                                        │
-│                 ┌───────────────┐                                │
-│                 │    Encoder    │  < 序列化，零拷贝 >           │
-│                 └───────┬───────┘                                │
-│                         │                                        │
-│                         ↓                                        │
-│              ┌──────────────────────┐                            │
-│              │  StringRingBuffer    │  < 1MB 环形缓冲区 >       │
-│              │  (单生产者单消费者)   │                            │
-│              └──────────┬───────────┘                            │
-└─────────────────────────┼────────────────────────────────────────┘
-                          │
-                          ↓
-┌─────────────────────────┼────────────────────────────────────────┐
-│                         │      Backend线程 (Consumer)             │
-│                         │      绑定到CPU核心15                    │
-│                         ↓                                        │
-│                 ┌───────────────┐                                │
-│                 │  Lock-free    │  < SPSC队列 >                 │
-│                 │     Queue     │                                │
-│                 └───────┬───────┘                                │
-│                         │                                        │
-│                         ↓                                        │
-│                 ┌───────────────┐                                │
-│                 │    Backend    │  < 批量消费 >                 │
-│                 │consume_loop() │                                │
-│                 └───────┬───────┘                                │
-│                         │                                        │
-│                         ↓                                        │
-│                 ┌───────────────┐                                │
-│                 │     Sinker    │  < O_DIRECT，4KB对齐写入 >    │
-│                 │  (磁盘I/O)    │                                │
-│                 └───────┬───────┘                                │
-│                         │                                        │
-│                         ↓                                        │
-│                    日志文件                                       │
-│              2025-11-02_1.log                                    │
-│              2025-11-02_2.log (自动分割)                         │
-└──────────────────────────────────────────────────────────────────┘
+│                         Frontend (Logger)                        │
+│  - 业务线程调用 LOG_INFO/DEBUG/ERROR 等宏                         │
+│  - 编译期检查：最小日志级别过滤                                    │
+│  - 编译期生成：格式化元信息和解码器                                │
+└────────────────────────┬────────────────────────────────────────┘
+                         │ 序列化（Encoder）
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                    Thread-Local Queue (SPSC)                     │
+│  - 每个线程独立的无锁队列（Single Producer Single Consumer）       │
+│  - 动态扩容：链式 RingBytes 节点（4KB → 64MB）                    │
+│  - Backend 拥有所有 Queue，线程持有借用指针                       │
+└────────────────────────┬────────────────────────────────────────┘
+                         │ 双缓冲同步
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                    Backend (Consumer Thread)                     │
+│  - 全局单例，后台线程轮询所有队列                                  │
+│  - 时间戳排序：从多个队列中选择最小时间戳的日志                     │
+│  - 反序列化（Decoder）：将二进制数据解码为可读字符串               │
+│  - 延迟回收：线程退出后队列先排空再销毁                            │
+└────────────────────────┬────────────────────────────────────────┘
+                         │ 格式化输出
+                         ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                    StringRingBuffer + Sinker                     │
+│  - StringRingBuffer：格式化字符串的环形缓冲区                     │
+│  - Sinker：文件 I/O（支持日志轮转、按日期分割）                    │
+│  - 使用 POSIX write() + page cache，定期 fdatasync()             │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### 关键技术
+### 关键设计决策
 
-1. **编译期格式化**：使用`FixedString`在编译期解析格式化字符串
-2. **类型擦除**：通过函数指针实现运行期多态，避免虚函数开销
-3. **内存对齐**：O_DIRECT要求4KB对齐，使用aligned_alloc分配缓冲区
-4. **RDTSC测量**：使用CPU时间戳计数器精确测量延迟
+1. **前后端分离**：
+   - **Frontend**（Logger）：快速序列化到内存队列
+   - **Backend**（消费线程）：异步格式化和磁盘 I/O
 
-## 📁 代码结构
+2. **编译期优化**：
+   - 格式化字符串作为模板参数（`FixedString`）
+   - 每个日志点生成独立的解码器函数
+   - 最小日志级别编译期过滤（`LOGZ_MIN_LEVEL`）
 
-```
-logZ/
-├── include/                    # 头文件
-│   ├── Logger.h               # 前端API，提供LOG_INFO等宏
-│   ├── Encoder.h              # 日志序列化，编译期优化
-│   ├── Decoder.h              # 日志解码（用于读取）
-│   ├── Backend.h              # 后端消费者线程
-│   ├── Queue.h                # 无锁SPSC队列
-│   ├── StringRingBuffer.h     # 环形缓冲区
-│   ├── RingBytes.h            # 字节环形缓冲区
-│   ├── Sinker.h               # 磁盘I/O，O_DIRECT写入
-│   └── README.md              # API文档
-│
-├── benchmark/                  # 性能测试
-│   ├── bench_concurrent_logging.cpp  # 并发性能测试
-│   ├── BUILD                  # Bazel构建配置
-│   └── README.md              # 性能测试说明
-│
-├── test/                       # 单元测试
-│   └── test_queue.cpp         # 队列测试
-│
-├── data/                       # 性能数据
-│   ├── latency_intdouble_cdf.csv  # IntDouble延迟CDF
-│   ├── latency_intdouble_pdf.csv  # IntDouble延迟PDF
-│   ├── latency_string_cdf.csv     # String延迟CDF
-│   ├── latency_string_pdf.csv     # String延迟PDF
-│   ├── latency_analysis.png       # 延迟分析图表
-│   └── latency_comparison.png     # 对比图表
-│
-├── logs/                       # 日志输出目录
-│   └── 2025-11-02_*.log       # 按日期分割的日志文件
-│
-├── plot_latency.py            # Python可视化脚本
-├── BUILD                      # 根目录Bazel配置
-├── WORKSPACE                  # Bazel工作空间配置
-└── README.md                  # 本文档
-```
+3. **内存管理**：
+   - Backend 拥有所有 Queue 的 `unique_ptr`
+   - 线程持有 `Queue*` 裸指针（借用）
+   - 双缓冲 + 两阶段删除避免 use-after-free
 
-## 🔬 核心组件详解
+4. **并发控制**：
+   - 生产者：完全无锁（thread_local queue）
+   - 消费者：单线程轮询，双缓冲同步队列列表
 
-### 1. Logger（前端）
+---
 
-- **位置**：`include/Logger.h`
-- **功能**：提供日志记录接口
-- **特点**：
-  - 编译期格式化字符串解析
-  - 内联函数，零运行时开销
-  - 支持LOG_TRACE/DEBUG/INFO/WARN/ERROR/FATAL
+## 核心数据结构
 
+### 1. **RingBytes** - 无锁环形缓冲区
 ```cpp
-// 使用示例
-LOG_INFO("Thread {} writes int={} double={}", thread_id, 42, 3.14);
+class RingBytes {
+    size_t capacity_;              // 容量（2的幂）
+    size_t capacity_mask_;         // 位掩码（用于快速取模）
+    std::atomic<uint64_t> write_pos_;  // 写位置
+    std::atomic<uint64_t> read_pos_;   // 读位置
+    std::unique_ptr<std::byte[]> buffer_;
+};
 ```
 
-### 2. Encoder（序列化器）
+**特性**：
+- SPSC（单生产者单消费者）模型
+- 容量必须为 2 的幂（使用位运算优化取模）
+- **不支持跨边界写入**：写入超过边界时返回 `nullptr`
+- 预触发 page fault（4KB 页面预写入）避免运行时延迟
 
-- **位置**：`include/Encoder.h`
-- **功能**：将日志参数序列化为二进制格式
-- **优化**：
-  - 只计算一次参数大小
-  - 直接写入环形缓冲区
-  - 支持基本类型和std::string
+### 2. **Queue** - 动态扩容的队列
+```cpp
+class Queue {
+    struct Node {
+        std::unique_ptr<RingBytes> ring;
+        std::atomic<Node*> next;
+        size_t capacity;
+    };
+    std::atomic<Node*> write_node_;  // 当前写节点
+    std::atomic<Node*> read_node_;   // 当前读节点
+};
+```
 
-### 3. StringRingBuffer（环形缓冲区）
+**特性**：
+- 链表结构：多个 `RingBytes` 节点
+- 自动扩容：当前节点满时分配 2倍容量的新节点（上限 64MB）
+- 写满时**拒绝日志**（避免无限内存增长）
+- 读空后自动回收旧节点
 
-- **位置**：`include/StringRingBuffer.h`
-- **大小**：1MB
-- **特点**：
-  - 单生产者单消费者（SPSC）
-  - 写满时丢弃日志，不阻塞
-  - 批量刷新到Sinker
+### 3. **Backend::QueueWrapper** - 队列生命周期管理
+```cpp
+struct QueueWrapper {
+    std::unique_ptr<Queue> queue;       // 拥有 Queue
+    std::atomic<bool> abandoned;        // 线程退出标记
+    std::thread::id owner_thread_id;    // 所属线程 ID
+    uint64_t created_timestamp;         // 创建时间
+    uint64_t abandoned_timestamp;       // 废弃时间
+};
+```
 
-### 4. Backend（后端消费者）
+**生命周期管理**：
+```
+1. 线程首次调用 LOG_XXX
+   ↓
+2. Backend::allocate_queue_for_thread()
+   - 创建 Queue（Backend 拥有 unique_ptr）
+   - 返回 Queue* 给线程（借用）
+   - 加入 m_master_list（Copy-on-Write）
+   ↓
+3. 线程退出时 thread_local 析构
+   ↓
+4. Backend::mark_queue_abandoned()
+   - 设置 abandoned = true
+   - 不删除 Queue！
+   ↓
+5. Backend 定期检查
+   - 发现 abandoned && queue->is_empty()
+   ↓
+6. 两阶段删除
+   - Phase 1: 从 m_master_list 移除 → m_pending_deletion
+   - Phase 2: 下次调用时销毁（此时 Backend 已不再访问）
+```
 
-- **位置**：`include/Backend.h`
-- **功能**：独立线程消费日志队列
-- **优化**：
-  - 绑定到独立CPU核心（核心15）
-  - 批量处理日志
-  - 支持实时调度（需root权限）
+### 4. **Metadata** - 日志元数据
+```cpp
+struct Metadata {
+    LogLevel level;           // 日志级别（1 byte）
+    uint64_t timestamp;       // 纳秒时间戳
+    uint32_t args_size;       // 参数序列化后的字节数
+    DecoderFunc decoder;      // 解码器函数指针（编译期生成）
+};
+```
 
-### 5. Sinker（磁盘I/O）
+### 5. **StringRingBuffer** - 格式化输出缓冲
+- 单线程环形缓冲区（Backend 专用）
+- 支持动态扩容（2倍增长）
+- 提供 `StringWriter` 接口用于 in-place 字符串构建
 
-- **位置**：`include/Sinker.h`
-- **功能**：将日志写入磁盘
-- **优化**：
-  - O_DIRECT绕过页缓存（7.4x性能提升）
-  - 4KB对齐缓冲区
-  - 自动按100MB分割文件
+---
 
-## 📊 性能测试结果
+## 工作流程
+
+### 1. **初始化阶段**
+```cpp
+auto& backend = Logger::get_backend();  // 获取全局单例
+backend.start();                         // 启动后台消费线程
+```
+
+### 2. **日志写入（热路径）**
+```cpp
+LOG_INFO("User {} logged in with score {}", username, score);
+```
+
+**执行流程**：
+```
+1. 编译期检查：if constexpr (LogLevel::INFO >= MinLevel)
+   ↓
+2. 获取 thread_local Queue*（首次调用时从 Backend 分配）
+   ↓
+3. 计算序列化大小：sizeof(Metadata) + args_size
+   ↓
+4. Queue::reserve_write(total_size)
+   - 成功：返回 buffer 指针
+   - 失败（队列满）：丢弃日志，增加 dropped_count
+   ↓
+5. 编码到 buffer
+   - 写入 Metadata（level, timestamp, args_size, decoder）
+   - 序列化参数（POD 直接拷贝，字符串存储长度+内容/指针）
+   ↓
+6. 返回（耗时 < 100 cycles）
+```
+
+### 3. **后台消费（Backend 线程）**
+```cpp
+while (running_) {
+    // 检查队列列表是否更新
+    if (m_dirty.load()) sync_active_list();
+    
+    // 从所有队列中选择最小时间戳的日志
+    process_one_log();
+    
+    // 定期刷盘和回收
+    if (++counter >= 50000) {
+        flush_to_disk();
+        reclaim_abandoned_queues();
+    }
+}
+```
+
+**process_one_log() 详细流程**：
+```
+1. 遍历 m_active_list 中所有 QueueWrapper
+   ↓
+2. 对每个 Queue 调用 read(sizeof(Metadata)) peek 元数据
+   ↓
+3. 比较 timestamp，找到最小值
+   ↓
+4. 从选中的 Queue 读取完整日志
+   - 读取 Metadata（commit）
+   - 读取 args buffer（commit）
+   ↓
+5. 调用 decoder(args_buffer, writer)
+   - 解码器是编译期生成的模板函数
+   - 将二进制数据转换为格式化字符串
+   ↓
+6. 写入 StringRingBuffer
+   ↓
+7. 定期 flush 到 Sinker（文件）
+```
+
+### 4. **关闭流程**
+```cpp
+backend.stop();  // 等待所有日志处理完成
+```
+- 停止消费循环
+- 处理剩余日志
+- 回收所有队列
+- 刷新所有缓冲区到磁盘
+
+---
+
+## Benchmark 性能测试
 
 ### 测试环境
+- 测试代码：`benchmark/logZ.benchmark.cpp`
+- 配置：4 个工作线程，每线程 100 万条日志
+- 测量指标：日志调用延迟（CPU cycles，使用 RDTSC）
 
-- **CPU**：16核 @ 5.137GHz
-- **编译器**：GCC (C++20)
-- **测试配置**：4个生产者线程，每线程100万次日志操作
-- **总样本**：400万条日志
-
-### 延迟测量（使用RDTSC）
-
-#### String类型日志
-
-```
-BM_ConcurrentLogging_String/iterations:1000000/threads:4
-  cycles_per_log=452 
-  p99_cycles=418 
-  dropped_msgs=0 
-  loss_rate_%=0
-```
-
-| 指标 | CPU Cycles | 延迟 (ns) | 说明 |
-|------|-----------|-----------|------|
-| **P50 (中位数)** | 152 | 29.6 | 50%的日志操作低于此值 |
-| **P90** | 190 | 37.0 | 90%的日志操作低于此值 |
-| **P99** | 418 | 81.4 | 99%的日志操作低于此值 |
-| **平均值** | 452 | 88.0 | 包含极端值的算术平均 |
-
-#### IntDouble类型日志
-
-| 指标 | CPU Cycles | 延迟 (ns) |
-|------|-----------|-----------|
-| **P50** | 151 | 29.4 |
-| **P90** | 152 | 29.6 |
-| **P99** | 190 | 37.0 |
-| **平均值** | 243 | 47.3 |
-
-### 延迟分布分析
-
-```
-String Logging 延迟分布:
-  < 500 cycles:     3,971,093 (99.277%)  ← 绝大多数情况
-  500-1000 cycles:     16,538 ( 0.413%)
-  1000-5000 cycles:    12,083 ( 0.302%)
-  5000-10000:              44 ( 0.001%)
-  >= 10000:               242 ( 0.006%)  ← 线程被调度的极端情况
-```
-
-### 性能优化历程
-
-| 优化阶段 | 技术 | 性能提升 |
-|---------|------|---------|
-| **初始版本** | 标准文件I/O | 基准 |
-| **O_DIRECT优化** | 绕过页缓存 | **7.4x** |
-| **CPU亲和性** | 绑定核心 | 减少15%尾延迟 |
-| **实时调度** | SCHED_FIFO | 减少80%极端延迟 |
-
-### 吞吐量
-
-- **IntDouble**：约330万条/秒
-- **String**：约340万条/秒
-- **零丢包率**：在正常负载下无日志丢失
-
-## 🚀 快速开始
-
-### 编译项目
-
-```bash
-# 使用Bazel构建
-bazel build //benchmark:bench_concurrent_logging
-
-# 运行性能测试
-./bazel-bin/benchmark/bench_concurrent_logging --benchmark_filter="BM_ConcurrentLogging_String"
-```
-
-### 代码示例
-
+### 测试方法
 ```cpp
-#include "include/Logger.h"
+auto start = rdtsc();
+LOG_INFO("Thread {} writing log {} with pi = {} and string {}", 
+         thread_id, i, 3.1415 + i, s);
+auto end = rdtsc();
+latency[i] = (end - start);
+```
+
+### 性能指标
+运行 `./run_perf_analysis.sh` 后可获得：
+- **延迟分布**（P50/P95/P99/P99.9）
+- **最小/最大/平均延迟**
+- **延迟曲线图**（`data/latency_result.txt` + `plot_latency.py`）
+
+### 典型结果（参考）
+```
+Min:     76 cycles     (序列化到队列的最小开销)
+Medium:  114 cycles    (正常情况)
+P99:     157 cycles    (队列扩容 + cache miss)
+```
+
+### 性能优化点
+1. **预分配内存**：RingBytes 构造时预触发 page fault
+2. **编译期优化**：日志级别过滤、格式化字符串编译期解析
+3. **无锁队列**：thread_local Queue 避免锁竞争
+4. **批量处理**：Backend 每 50000 次循环才 flush 一次
+
+---
+
+## 应用场景
+
+### 1. **高频交易系统 (HFT)**
+**需求**：
+- 微秒级延迟敏感
+- 需要详细审计日志（订单、成交、风控）
+- 不能因为日志影响交易性能
+
+**logZ 优势**：
+- 日志调用 < 100 cycles（约 30-50 ns @ 3 GHz）
+- 完全异步，不阻塞交易逻辑
+- 时间戳精确到纳秒
+
+**示例**：
+```cpp
+LOG_INFO("Order submitted: symbol={} price={} qty={} orderID={}", 
+         symbol, price, quantity, order_id);
+```
+
+
+### 2. **实时音视频处理**
+**需求**：
+- 音频线程延迟极低（< 10ms）
+- 需要记录帧处理、编解码耗时
+- 调试性能瓶颈
+
+**logZ 优势**：
+- 日志调用不分配内存（队列预分配）
+- 支持浮点数、自定义类型
+- 可在音频回调中安全使用
+
+**示例**：
+```cpp
+LOG_TRACE("Audio frame processed: samples={} latency={}us", 
+          sample_count, latency_us);
+```
+
+**配置**：
+```cpp
+#define LOGZ_MIN_LEVEL ::logZ::LogLevel::WARN  // 只记录 WARN 及以上
+```
+
+---
+
+## 编译和使用
+
+### 使用 Bazel 构建
+```bash
+# 运行测试
+bazel test //test:test_logger
+
+# 运行 benchmark
+bazel run //benchmark:logZ_benchmark
+
+# 性能分析
+./run_perf_analysis.sh
+```
+
+### 基本用法
+```cpp
+#include "Logger.h"
 
 int main() {
-    // 日志会自动初始化Backend
+    // 1. 启动 Backend
+    auto& backend = logZ::Logger::get_backend();
+    backend.start();
+    
+    // 2. 记录日志
     LOG_INFO("Application started");
+    LOG_DEBUG("Debug value: {}", 42);
+    LOG_ERROR("Error occurred: {}", error_message);
     
-    // 支持多种类型
-    int count = 42;
-    double value = 3.14159;
-    std::string name = "example";
-    
-    LOG_INFO("Count: {}, Value: {}, Name: {}", count, value, name);
-    LOG_WARN("Warning message");
-    LOG_ERROR("Error occurred");
-    
-    // 程序结束时自动刷新并关闭
+    // 3. 关闭（自动 flush）
+    backend.stop();
     return 0;
 }
 ```
 
-### 性能分析
+### 配置选项
+```cpp
+// 编译期设置最小日志级别
+#define LOGZ_MIN_LEVEL ::logZ::LogLevel::INFO
 
-```bash
-# 生成延迟分布图表
-python3 plot_latency.py
+// Backend 配置
+Backend<LogLevel::INFO> backend(
+    "./logs",           // 日志目录
+    1024 * 1024         // StringRingBuffer 大小
+);
 
-# 查看结果
-ls -lh data/
-# latency_analysis.png      - CDF和PDF图表
-# latency_comparison.png    - IntDouble vs String对比
-# latency_string_cdf.csv    - 原始CDF数据
-# latency_string_pdf.csv    - 原始PDF数据
+// 绑定 CPU 核心（避免调度延迟）
+backend.start(2);  // 绑定到 CPU 核心 2
 ```
-
-### 优化选项（可选，需root权限）
-
-为了获得最低延迟，可以：
-
-1. **设置CPU为performance模式**
-```bash
-echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
-```
-
-2. **禁用CPU idle states**
-```bash
-echo 1 | sudo tee /sys/devices/system/cpu/cpu*/cpuidle/state*/disable
-```
-
-3. **使用实时调度运行benchmark**
-```bash
-sudo ./bazel-bin/benchmark/bench_concurrent_logging
-```
-
-## 📈 可视化结果
-
-项目包含Python脚本用于生成性能可视化：
-
-- **CDF图**：累积分布函数，显示延迟百分位
-- **PDF图**：概率密度函数，显示延迟分布
-- **对比图**：IntDouble vs String性能对比
-
-![延迟分析示例](data/latency_analysis.png)
-
-## 🔧 配置参数
-
-### StringRingBuffer
-- **大小**：1MB（可在`StringRingBuffer.h`中调整）
-- **写满策略**：丢弃新日志，不阻塞
-
-### Sinker
-- **缓冲区**：4KB对齐
-- **文件分割**：100MB/文件
-- **I/O模式**：O_DIRECT
-
-### Backend
-- **CPU绑定**：最后一个核心（默认15）
-- **调度策略**：SCHED_FIFO（可选，需root）
-- **优先级**：10（较低实时优先级）
-
-## 🎯 设计权衡
-
-### 选择无锁而非加锁
-- **优势**：纳秒级延迟，无线程竞争
-- **代价**：写满时丢弃日志（可通过丢包率监控）
-
-### 选择O_DIRECT而非标准I/O
-- **优势**：7.4x性能提升，延迟更稳定
-- **代价**：需要内存对齐，实现复杂度增加
-
-### 选择编译期而非运行期
-- **优势**：零运行时开销，类型安全
-- **代价**：不支持动态格式化字符串
-
-## 📝 关键指标解释
-
-### P50 vs 平均值
-- **P50（中位数）**：一半日志操作的延迟低于此值，反映典型性能
-- **平均值（Mean）**：所有操作的算术平均，受极端值影响大
-- **差异原因**：0.3%的样本被操作系统调度，延迟达到毫秒级，拉高平均值
-
-### 为什么会有极端延迟？
-- **线程调度**：操作系统抢占CPU时间片
-- **缓存未命中**：L3 cache miss
-- **CPU频率调整**：动态频率缩放
-- **中断处理**：硬件中断、系统调用
-
-### 如何减少极端延迟？
-参见"优化选项"章节：CPU绑定、实时调度、固定频率
-
-## 🤝 贡献
-
-欢迎提交Issue和Pull Request！
-
-## 📄 许可证
-
-本项目采用MIT许可证。
-
-## 🙏 致谢
-
-- 使用[Google Benchmark](https://github.com/google/benchmark)进行性能测试
-- 使用[Bazel](https://bazel.build/)构建系统
-- 参考了多个高性能日志库的设计思想
 
 ---
 
-**作者**: Falcom4000  
-**最后更新**: 2025-11-02
+## 技术亮点
+
+### 1. **编译期魔法**
+- **FixedString**：格式化字符串作为模板参数
+- **Decoder 生成**：每个日志点自动生成解码器函数
+- **零运行时开销**：类型检查和格式解析在编译期完成
+
+### 2. **内存安全**
+- **所有权明确**：Backend 拥有 Queue，线程借用
+- **两阶段删除**：避免 use-after-free
+- **RAII 保证**：thread_local 析构自动标记队列废弃
+
+### 3. **性能优化**
+- **Cache Line 对齐**：防止 false sharing（`alignas(64)`）
+- **分支预测提示**：`[[likely]]` / `[[unlikely]]`
+- **位运算优化**：2 的幂容量 + 位掩码取代取模运算
+- **预分配策略**：避免运行时 page fault
+
+### 4. **可观测性**
+- **丢失日志计数**：`backend.get_dropped_count()`
+- **队列状态监控**：abandoned_timestamp、created_timestamp
+- **延迟分析工具**：RDTSC + 百分位统计
+
+---
+
+## 文件结构
+
+```
+logZ/
+├── include/               # 头文件
+│   ├── Logger.h          # Frontend API（日志宏定义）
+│   ├── Backend.h         # Backend 消费线程
+│   ├── Queue.h           # 动态扩容队列
+│   ├── RingBytes.h       # 无锁环形缓冲区
+│   ├── Encoder.h         # 序列化（编译期优化）
+│   ├── Decoder.h         # 反序列化（类型推导）
+│   ├── StringRingBuffer.h # 格式化输出缓冲
+│   ├── Sinker.h          # 文件 I/O
+│   ├── LogTypes.h        # 公共类型定义
+│   └── Fixedstring.h     # 编译期字符串
+├── benchmark/
+│   └── logZ.benchmark.cpp # 性能测试
+├── test/                  # 单元测试
+├── data/                  # 测试输出数据
+├── plot_latency.py        # 延迟可视化脚本
+└── run_perf_analysis.sh   # 一键性能分析
+```

@@ -113,7 +113,6 @@ namespace logZ {
 
 // Implementation of get_thread_queue() - must be after Backend is complete
 inline Queue& Logger::get_thread_queue() {
-    // 🔥 优化: 合并为单个TLS结构体,减少TLS访问次数
     struct ThreadLocalData {
         Queue* queue_ptr = nullptr;
         
@@ -166,9 +165,6 @@ void Logger::log_impl(const Args&... args) {
     // Encode metadata and arguments into buffer using Encoder functions
     // Pass args_size to avoid redundant calculation
     encode_log_entry<Fmt, Level>(buffer, timestamp, args_size, args...);
-
-    // Commit write
-    queue.commit_write(total_size);
 }
 
 } // namespace logZ

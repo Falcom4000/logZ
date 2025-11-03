@@ -188,15 +188,6 @@ public:
     }
 
     /**
-     * @brief Commit the write operation
-     * @param size Number of bytes to commit
-     */
-    void commit_write(size_t size) {
-        Node* current_write = write_node_.load(std::memory_order_acquire);
-        current_write->ring->commit_write(size);
-    }
-
-    /**
      * @brief Read data from the queue
      * @param size Number of bytes to read
      * @return Pointer to the data, or nullptr if not enough data available

@@ -21,6 +21,7 @@ void worker_thread(int thread_id, int num_logs, std::vector<int>& latency) {
     std::string s = "test";
     // 写日志
     for (int i = 0; i < num_logs; ++i) {
+        s[3] = 'a' + (i % 26);
         auto start = rdtsc();
         LOG_INFO("Thread {} writing log {} with pi = {} and string {}", thread_id, i, 3.1415 +i, s);
         auto end = rdtsc();

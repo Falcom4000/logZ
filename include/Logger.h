@@ -114,31 +114,26 @@ namespace logZ {
 // Implementation of get_thread_queue() - must be after Backend is complete
 inline Queue& Logger::get_thread_queue() {
     struct ThreadLocalData {
-        Queue* queue_ptr = nullptr;
+        Queue* queue_ptr;
+        
+        ThreadLocalData() {
+            auto& backend = Logger::get_backend<MinLevel>();
+            queue_ptr = backend.allocate_queue_for_thread();
+            
+            if (!queue_ptr) [[unlikely]] {
+                throw std::runtime_error("Failed to allocate queue from Backend");
+            }
+        }
         
         ~ThreadLocalData() {
             if (queue_ptr) {
                 auto& backend = Logger::get_backend<MinLevel>();
                 backend.mark_queue_abandoned(queue_ptr);
             }
-            // Note: DO NOT delete queue!
-            // Backend owns the Queue and will destroy it after draining
         }
     };
     
     static thread_local ThreadLocalData tls_data;
-    
-    // First call: allocate Queue from Backend
-    // Hot path: Usually already initialized
-    if (tls_data.queue_ptr == nullptr) [[unlikely]] {
-        auto& backend = get_backend<MinLevel>();
-        tls_data.queue_ptr = backend.allocate_queue_for_thread();
-        
-        if (!tls_data.queue_ptr) [[unlikely]] {
-            // Should never happen, but handle gracefully
-            throw std::runtime_error("Failed to allocate queue from Backend");
-        }
-    }
     
     return *tls_data.queue_ptr;
 }

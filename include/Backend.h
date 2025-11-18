@@ -53,11 +53,11 @@ private:
             , owner_thread_id(tid)
             , created_timestamp(get_current_timestamp_ns()) {}
         
-        // Prevent copy, allow move
+        // Disable copy and move (managed by shared_ptr)
         QueueWrapper(const QueueWrapper&) = delete;
         QueueWrapper& operator=(const QueueWrapper&) = delete;
-        QueueWrapper(QueueWrapper&&) = default;
-        QueueWrapper& operator=(QueueWrapper&&) = default;
+        QueueWrapper(QueueWrapper&&) = delete;
+        QueueWrapper& operator=(QueueWrapper&&) = delete;
         
     private:
         static uint64_t get_current_timestamp_ns() {
@@ -83,9 +83,9 @@ public:
           sinker_(log_dir),
           consumer_thread_() {
         // Initialize both lists to point to the same empty vector
-        auto empty = std::make_shared<std::vector<QueueWrapper*>>();
-        m_active_list = empty;
-        m_master_list = empty;
+        auto empty = std::make_shared<std::vector<std::shared_ptr<QueueWrapper>>>();
+        m_snapshot_list = empty;
+        m_current_list = empty;
     }
 
     ~Backend() {
@@ -105,7 +105,7 @@ public:
      * Called when a thread first calls LOG_xxx
      * 
      * @return Queue* Raw pointer for the thread to use (Borrower)
-     *         Backend retains ownership via unique_ptr
+     *         Backend retains ownership via shared_ptr
      */
     Queue* allocate_queue_for_thread() {
         std::lock_guard<std::mutex> lock(m_writer_mutex);
@@ -114,28 +114,21 @@ public:
         auto queue = std::make_unique<Queue>(4096);  // Initial 4KB capacity
         Queue* raw_ptr = queue.get();
         
-        // 2. Wrap in QueueWrapper
-        auto wrapper = std::make_unique<QueueWrapper>(
+        // 2. Wrap in QueueWrapper with shared_ptr
+        auto wrapper = std::make_shared<QueueWrapper>(
             std::move(queue),
             std::this_thread::get_id()
         );
-        QueueWrapper* wrapper_ptr = wrapper.get();
         
-        // 3. Add to pool (transfer ownership)
-        m_queue_pool.push_back(std::move(wrapper));
+        // 3. Add to current_list (Copy-on-Write)
+        auto new_current = std::make_shared<std::vector<std::shared_ptr<QueueWrapper>>>(*m_current_list);
+        new_current->push_back(wrapper);
+        m_current_list = new_current;
         
-        // 4. Build lookup mappings for fast search
-        m_queue_lookup[raw_ptr] = wrapper_ptr;
-        
-        // 5. Add to master_list (Copy-on-Write)
-        auto new_master = std::make_shared<std::vector<QueueWrapper*>>(*m_master_list);
-        new_master->push_back(wrapper_ptr);
-        m_master_list = new_master;
-        
-        // 6. Signal backend to sync
+        // 4. Signal backend to sync
         m_dirty.store(true, std::memory_order_release);
         
-        // 7. Return raw pointer to thread (Borrower)
+        // 5. Return raw pointer to thread (Borrower)
         return raw_ptr;
     }
     
@@ -153,26 +146,24 @@ public:
         
         std::lock_guard<std::mutex> lock(m_writer_mutex);
         
-        // Find corresponding wrapper
-        auto it = m_queue_lookup.find(queue);
-        if (it == m_queue_lookup.end()) {
-            return;  // Already reclaimed or invalid
+        // Find corresponding wrapper (linear search, but queue count is small)
+        for (const auto& wrapper : *m_current_list) {
+            if (wrapper->queue.get() == queue) {
+                // Set abandoned flag (atomic, Backend can see without lock)
+                bool expected = false;
+                if (wrapper->abandoned.compare_exchange_strong(expected, true)) {
+                    // First time marking as abandoned
+                    wrapper->abandoned_timestamp = get_current_timestamp_ns();
+                }
+                
+                // Don't remove from current_list here!
+                // Let Backend discover it via abandoned flag
+                
+                // Signal backend to check for abandoned queues
+                m_dirty.store(true, std::memory_order_release);
+                return;
+            }
         }
-        
-        QueueWrapper* wrapper = it->second;
-        
-        // Set abandoned flag (atomic, Backend can see without lock)
-        bool expected = false;
-        if (wrapper->abandoned.compare_exchange_strong(expected, true)) {
-            // First time marking as abandoned
-            wrapper->abandoned_timestamp = get_current_timestamp_ns();
-        }
-        
-        // Don't remove from master_list here!
-        // Let Backend discover it via abandoned flag
-        
-        // Optional: Signal backend to check for abandoned queues
-        m_dirty.store(true, std::memory_order_release);
     }
 
     /**
@@ -270,13 +261,13 @@ public:
 
 private:
     /**
-     * @brief Synchronize active list with master list
+     * @brief Synchronize snapshot list with current list
      * Called when m_dirty flag is set
      * This is the only time Backend thread acquires the lock
      */
-    void sync_active_list() {
+    void sync_snapshot_list() {
         std::lock_guard<std::mutex> lock(m_writer_mutex);
-        m_active_list = m_master_list;  // shared_ptr assignment, ref count managed automatically
+        m_snapshot_list = m_current_list;  // shared_ptr assignment, ref count managed automatically
         m_dirty.store(false, std::memory_order_relaxed);
     }
     
@@ -290,7 +281,7 @@ private:
             // Check dirty flag (only atomic load, no lock)
             // Hot path: Usually not dirty
             if (m_dirty.load(std::memory_order_acquire)) [[unlikely]] {
-                sync_active_list();  // Sync when updates detected
+                sync_snapshot_list();  // Sync when updates detected
             }
             
             bool processed_any = process_one_log();
@@ -312,7 +303,7 @@ private:
 
         // Final sync and drain
         if (m_dirty.load(std::memory_order_acquire)) {
-            sync_active_list();
+            sync_snapshot_list();
         }
         while (process_one_log()) {
             // Keep processing until all queues are empty
@@ -329,7 +320,7 @@ private:
      * @brief Process one log entry with minimum timestamp from all queues
      * @return true if a log was processed, false if all queues are empty
      * 
-     * This function is completely lock-free - it only traverses m_active_list
+     * This function is completely lock-free - it only traverses m_snapshot_list
      */
     bool process_one_log() {
         // Poll all registered queues and find the log entry with minimum timestamp
@@ -337,9 +328,9 @@ private:
         uint64_t min_timestamp = UINT64_MAX;
         
         // Traverse all queue heads to find minimum timestamp
-        // LOCK-FREE: Direct traversal of m_active_list, no atomic operations
-        for (QueueWrapper* wrapper : *m_active_list) {
-            if (wrapper != nullptr && wrapper->queue != nullptr) [[likely]] {
+        // LOCK-FREE: Direct traversal of m_snapshot_list, no atomic operations
+        for (const auto& wrapper : *m_snapshot_list) {
+            if (wrapper && wrapper->queue) [[likely]] {
                 // Check if abandoned and empty - mark for reclaim
                 if (wrapper->abandoned.load(std::memory_order_acquire)) [[unlikely]] {
                     if (wrapper->queue->is_empty()) {
@@ -511,14 +502,14 @@ private:
      * Called periodically in consume_loop
      * 
      * TWO-PHASE DELETION PROTOCOL:
-     * Phase 1 (this call): Remove from m_master_list, move to m_pending_deletion
-     *   - Updates m_master_list with Copy-on-Write
+     * Phase 1 (this call): Remove from m_current_list, move to m_pending_deletion
+     *   - Updates m_current_list with Copy-on-Write
      *   - Sets m_dirty flag
-     *   - Moves QueueWrapper to m_pending_deletion (ownership preserved)
-     *   - Backend thread will sync m_active_list in next iteration
+     *   - Moves QueueWrapper to m_pending_deletion (shared_ptr keeps it alive)
+     *   - Backend thread will sync m_snapshot_list in next iteration
      * 
      * Phase 2 (next call): Delete queues from m_pending_deletion
-     *   - By this time, m_active_list has been synced (no longer references deleted queues)
+     *   - By this time, m_snapshot_list has been synced (no longer references deleted queues)
      *   - Safe to actually destroy the Queue objects
      * 
      * This ensures process_one_log() never accesses deleted memory
@@ -527,17 +518,17 @@ private:
         std::lock_guard<std::mutex> lock(m_writer_mutex);
         
         // Phase 2: Delete previously marked queues
-        // At this point, m_active_list has been synced and no longer references them
+        // At this point, m_snapshot_list has been synced and no longer references them
         if (!m_pending_deletion.empty()) {
-            m_pending_deletion.clear();  // Destroy all unique_ptrs -> Queues deleted
+            m_pending_deletion.clear();  // shared_ptr ref count drops -> Queues deleted
         }
         
         // Phase 1: Find abandoned and empty queues
-        std::vector<QueueWrapper*> to_reclaim;
-        for (auto& wrapper_ptr : m_queue_pool) {
-            if (wrapper_ptr->abandoned.load(std::memory_order_acquire) &&
-                wrapper_ptr->queue->is_empty()) {
-                to_reclaim.push_back(wrapper_ptr.get());
+        std::vector<std::shared_ptr<QueueWrapper>> to_reclaim;
+        for (const auto& wrapper : *m_current_list) {
+            if (wrapper->abandoned.load(std::memory_order_acquire) &&
+                wrapper->queue->is_empty()) {
+                to_reclaim.push_back(wrapper);
             }
         }
         
@@ -545,33 +536,28 @@ private:
             return;
         }
         
-        // Remove from master_list (Copy-on-Write)
-        auto new_master = std::make_shared<std::vector<QueueWrapper*>>();
-        for (QueueWrapper* wrapper : *m_master_list) {
-            if (std::find(to_reclaim.begin(), to_reclaim.end(), wrapper) == to_reclaim.end()) {
-                new_master->push_back(wrapper);
+        // Remove from current_list (Copy-on-Write)
+        auto new_current = std::make_shared<std::vector<std::shared_ptr<QueueWrapper>>>();
+        for (const auto& wrapper : *m_current_list) {
+            // Check if this wrapper is NOT in the to_reclaim list
+            bool should_keep = true;
+            for (const auto& reclaim_wrapper : to_reclaim) {
+                if (wrapper.get() == reclaim_wrapper.get()) {
+                    should_keep = false;
+                    break;
+                }
+            }
+            if (should_keep) {
+                new_current->push_back(wrapper);
             }
         }
-        m_master_list = new_master;
+        m_current_list = new_current;
         m_dirty.store(true, std::memory_order_release);
         
-        // Move to pending deletion (ownership transfer from m_queue_pool)
-        for (QueueWrapper* wrapper : to_reclaim) {
-            m_queue_lookup.erase(wrapper->queue.get());
-            
-            // Find in pool and move to pending
-            auto it = std::find_if(m_queue_pool.begin(), m_queue_pool.end(),
-                [wrapper](const std::unique_ptr<QueueWrapper>& ptr) {
-                    return ptr.get() == wrapper;
-                });
-            
-            if (it != m_queue_pool.end()) {
-                m_pending_deletion.push_back(std::move(*it));  // Transfer ownership
-                m_queue_pool.erase(it);
-            }
-        }
+        // Move to pending deletion (shared_ptr keeps them alive)
+        m_pending_deletion = std::move(to_reclaim);
         
-        // Queue will be deleted in NEXT call after m_active_list syncs
+        // Queue will be deleted in NEXT call after m_snapshot_list syncs
     }
     
     /**
@@ -580,15 +566,10 @@ private:
     void reclaim_all_queues() {
         std::lock_guard<std::mutex> lock(m_writer_mutex);
         
-        // Clear lookup maps
-        m_queue_lookup.clear();
-        
-        // Clear lists
-        m_master_list = std::make_shared<std::vector<QueueWrapper*>>();
-        m_active_list = std::make_shared<std::vector<QueueWrapper*>>();
-        
-        // Clear pool (destroys all unique_ptrs -> all Queues deleted)
-        m_queue_pool.clear();
+        // Clear lists (shared_ptr ref count drops -> all Queues deleted)
+        m_current_list = std::make_shared<std::vector<std::shared_ptr<QueueWrapper>>>();
+        m_snapshot_list = std::make_shared<std::vector<std::shared_ptr<QueueWrapper>>>();
+        m_pending_deletion.clear();
     }
     
     /**
@@ -613,16 +594,15 @@ private:
     // Statistics
     std::atomic<uint64_t> dropped_messages_{0};  // Counter for dropped messages
     
-    // Queue ownership and management
-    std::vector<std::unique_ptr<QueueWrapper>> m_queue_pool;  // Backend owns all Queues
-    std::unordered_map<Queue*, QueueWrapper*> m_queue_lookup; // Fast lookup: Queue* -> Wrapper
-    std::vector<std::unique_ptr<QueueWrapper>> m_pending_deletion; // Queues marked for deletion (two-phase)
+    // Queue ownership and management (simplified design)
+    std::vector<std::shared_ptr<QueueWrapper>> m_pending_deletion; // Queues marked for deletion (two-phase)
     
     // Double-buffering for lock-free traversal
-    std::shared_ptr<std::vector<QueueWrapper*>> m_active_list;   // Backend's private list
-    std::shared_ptr<std::vector<QueueWrapper*>> m_master_list;   // Master list for updates
-    std::mutex m_writer_mutex;                                   // Protects master_list and pool
-    std::atomic<bool> m_dirty{false};                            // Dirty flag for sync
+    // Now using shared_ptr<QueueWrapper> for automatic lifetime management
+    std::shared_ptr<std::vector<std::shared_ptr<QueueWrapper>>> m_snapshot_list;  // Backend's snapshot for reading (lock-free)
+    std::shared_ptr<std::vector<std::shared_ptr<QueueWrapper>>> m_current_list;   // Current list for updates (protected by mutex)
+    std::mutex m_writer_mutex;                                                     // Protects current_list
+    std::atomic<bool> m_dirty{false};                                              // Dirty flag for sync
 };
 
 } // namespace logZ

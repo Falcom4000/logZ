@@ -91,37 +91,6 @@ public:
     }
 
     /**
-     * @brief Write data to the buffer
-     * @param data Pointer to the data to write
-     * @param size Number of bytes to write
-     * @return Pointer to where the data was written, or nullptr if not enough space
-     * 
-     * This is a convenience function that combines reserve and memcpy.
-     * Still needs commit_write() to make the data visible to readers.
-     */
-    std::byte* write(const void* data, size_t size) {
-        std::byte* dest = reserve_write(size);
-        if (dest == nullptr) [[unlikely]] {
-            return nullptr;
-        }
-
-        // Handle wrap-around case using bit mask (faster than modulo)
-        size_t write_start = (write_pos_.load(std::memory_order_relaxed) - size) & capacity_mask_;
-        size_t first_part = std::min(size, capacity_ - write_start);
-        
-        std::memcpy(&buffer_[write_start], data, first_part);
-        
-        if (first_part < size) {
-            // Wrap around to the beginning
-            std::memcpy(&buffer_[0], 
-                       static_cast<const std::byte*>(data) + first_part,
-                       size - first_part);
-        }
-
-        return &buffer_[write_start];
-    }
-
-    /**
      * @brief Read data from the buffer
      * @param size Number of bytes to read
      * @return Pointer to the data, or nullptr if not enough data available

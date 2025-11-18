@@ -38,18 +38,17 @@ public:
      * @param initial_capacity Initial capacity of the first RingBytes
      */
     explicit Queue(size_t initial_capacity = 4096)
-        : initial_capacity_(initial_capacity)
-        , write_node_(nullptr)
+        : write_node_(nullptr)
         , read_node_(nullptr) {
         // Create the first node
         Node* first_node = new Node(initial_capacity);
-        write_node_.store(first_node, std::memory_order_relaxed);
-        read_node_.store(first_node, std::memory_order_relaxed);
+        write_node_ = first_node;
+        read_node_ = first_node;
     }
 
     ~Queue() {
         // Clean up all nodes
-        Node* current = read_node_.load(std::memory_order_relaxed);
+        Node* current = read_node_;
         while (current != nullptr) {
             Node* next = current->next.load(std::memory_order_relaxed);
             delete current;
@@ -76,7 +75,7 @@ public:
             return nullptr;
         }
 
-        Node* current_write = write_node_.load(std::memory_order_acquire);
+        Node* current_write = write_node_;
         std::byte* ptr = current_write->ring->reserve_write(size);
         
         // Hot path: Usually succeeds on first try
@@ -119,70 +118,9 @@ public:
             return nullptr;
         }
         
-        // Link the new node
+        // Link the new node (atomic: producer writes, consumer reads)
         current_write->next.store(new_node, std::memory_order_release);
-        write_node_.store(new_node, std::memory_order_release);
-        
-        return ptr;
-    }
-
-    /**
-     * @brief Write data to the queue
-     * @param data Pointer to the data to write
-     * @param size Number of bytes to write
-     * @return Pointer to where the data was written, or nullptr on failure
-     */
-    std::byte* write(const void* data, size_t size) {
-        if (size == 0 || data == nullptr) {
-            return nullptr;
-        }
-
-        Node* current_write = write_node_.load(std::memory_order_acquire);
-        std::byte* ptr = current_write->ring->write(data, size);
-        
-        // Hot path: Usually succeeds on first try
-        if (ptr != nullptr) [[likely]] {
-            return ptr;
-        }
-
-        // Current RingBytes is full
-        // If already at max capacity (64MB), reject the write (drop message)
-        if (current_write->capacity >= MAX_NODE_CAPACITY) [[unlikely]] {
-            return nullptr;  // Drop message when at max capacity
-        }
-        
-        // Create a new node with double capacity, capped at MAX_NODE_CAPACITY
-        size_t new_capacity = current_write->capacity * 2;
-        if (new_capacity > MAX_NODE_CAPACITY) {
-            new_capacity = MAX_NODE_CAPACITY;
-        }
-        
-        // Make sure new capacity is at least large enough for this write
-        while (new_capacity < size && new_capacity < MAX_NODE_CAPACITY) {
-            new_capacity *= 2;
-            if (new_capacity > MAX_NODE_CAPACITY) {
-                new_capacity = MAX_NODE_CAPACITY;
-            }
-        }
-        
-        // If size is larger than MAX_NODE_CAPACITY, reject it
-        if (size > MAX_NODE_CAPACITY) {
-            return nullptr;
-        }
-        
-        Node* new_node = new Node(new_capacity);
-        
-        // Write to the new node
-        ptr = new_node->ring->write(data, size);
-        if (ptr == nullptr) {
-            // Size is too large even for the new node
-            delete new_node;
-            return nullptr;
-        }
-        
-        // Link the new node
-        current_write->next.store(new_node, std::memory_order_release);
-        write_node_.store(new_node, std::memory_order_release);
+        write_node_ = new_node;  // Only producer accesses write_node_
         
         return ptr;
     }
@@ -197,14 +135,14 @@ public:
             return nullptr;
         }
 
-        Node* current_read = read_node_.load(std::memory_order_acquire);
+        Node* current_read = read_node_;
         std::byte* ptr = current_read->ring->read(size);
         
         if (ptr != nullptr) {
             return ptr;
         }
 
-        // Check if we need to switch to the next node
+        // Check if we need to switch to the next node (atomic: producer writes, consumer reads)
         Node* next_node = current_read->next.load(std::memory_order_acquire);
         if (next_node == nullptr) {
             // No more data available
@@ -213,8 +151,8 @@ public:
 
         // Current RingBytes is exhausted, check if it's completely empty
         if (current_read->ring->available_read() == 0) {
-            // Switch to the next node
-            read_node_.store(next_node, std::memory_order_release);
+            // Switch to the next node (only consumer accesses read_node_)
+            read_node_ = next_node;
             
             // Delete the old node
             delete current_read;
@@ -232,15 +170,15 @@ public:
      * @param size Number of bytes to commit as read
      */
     void commit_read(size_t size) {
-        Node* current_read = read_node_.load(std::memory_order_acquire);
+        Node* current_read = read_node_;
         current_read->ring->commit_read(size);
         
         // Check if we should clean up and switch to the next node
         if (current_read->ring->available_read() == 0) {
             Node* next_node = current_read->next.load(std::memory_order_acquire);
             if (next_node != nullptr) {
-                // Switch to the next node
-                read_node_.store(next_node, std::memory_order_release);
+                // Switch to the next node (only consumer accesses read_node_)
+                read_node_ = next_node;
                 
                 // Delete the old node
                 delete current_read;
@@ -254,12 +192,12 @@ public:
      */
     size_t available_read() const {
         size_t total = 0;
-        Node* current = read_node_.load(std::memory_order_acquire);
+        Node* current = read_node_;
         
         while (current != nullptr) {
             total += current->ring->available_read();
             Node* next = current->next.load(std::memory_order_acquire);
-            if (next == nullptr || current == write_node_.load(std::memory_order_acquire)) {
+            if (next == nullptr || current == write_node_) {
                 break;
             }
             current = next;
@@ -281,7 +219,7 @@ public:
      * @return Number of bytes available for writing in current node
      */
     size_t available_write() const {
-        Node* current_write = write_node_.load(std::memory_order_acquire);
+        Node* current_write = write_node_;
         return current_write->ring->available_write();
     }
 
@@ -290,7 +228,7 @@ public:
      * @return Capacity in bytes
      */
     size_t current_capacity() const {
-        Node* current_write = write_node_.load(std::memory_order_acquire);
+        Node* current_write = write_node_;
         return current_write->capacity;
     }
 
@@ -300,8 +238,8 @@ public:
      */
     size_t node_count() const {
         size_t count = 0;
-        Node* current = read_node_.load(std::memory_order_acquire);
-        Node* write = write_node_.load(std::memory_order_acquire);
+        Node* current = read_node_;
+        Node* write = write_node_;
         
         while (current != nullptr) {
             count++;
@@ -315,9 +253,8 @@ public:
     }
 
 private:
-    const size_t initial_capacity_;
-    alignas(64) std::atomic<Node*> write_node_;  // Points to the current node for writing
-    alignas(64) std::atomic<Node*> read_node_;   // Points to the current node for reading
+    alignas(64) Node* write_node_;  // Only accessed by producer thread
+    alignas(64) Node* read_node_;   // Only accessed by consumer thread
 };
 
 }  // namespace logZ

@@ -14,7 +14,21 @@ cc_library(
         "include/Fixedstring.h",
     ],
     includes = ["include"],
+    copts = ["-std=c++20"],
     visibility = ["//visibility:public"],
+)
+
+# Test binary with Google Test
+cc_test(
+    name = "test_queue",
+    srcs = ["test/test_queue.cpp"],
+    deps = [
+        ":logZ",
+        "@com_google_googletest//:gtest",
+        "@com_google_googletest//:gtest_main",
+    ],
+    copts = ["-std=c++20"],
+    linkopts = ["-pthread"],
 )
 
 # Logger test with single/multi-thread tests
@@ -29,3 +43,4 @@ cc_test(
     linkopts = ["-pthread"],
     copts = ["-std=c++20"],
 )
+

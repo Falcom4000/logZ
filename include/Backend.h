@@ -327,6 +327,9 @@ private:
         Queue* selected_queue = nullptr;
         uint64_t min_timestamp = UINT64_MAX;
         
+        if (output_buffer_.get_free_space() < 32) {
+            return false;
+        }
         // Traverse all queue heads to find minimum timestamp
         // LOCK-FREE: Direct traversal of m_snapshot_list, no atomic operations
         for (const auto& wrapper : *m_snapshot_list) {
@@ -362,7 +365,6 @@ private:
                 return true;
             }
         }
-        
         return false;
     }
 
@@ -375,8 +377,6 @@ private:
         // Copy metadata to stack FIRST
         Metadata metadata = *metadata_ptr;
         
-        // Commit metadata read to advance pointer
-        queue->commit_read(sizeof(Metadata));
         
         // Read args buffer
         std::byte* args_buffer = nullptr;
@@ -404,10 +404,8 @@ private:
         
         writer.append("\n");
         
-        // Commit args read
-        if (metadata.args_size > 0) {
-            queue->commit_read(metadata.args_size);
-        }
+        // Commit read
+        queue->commit_read(metadata.args_size + sizeof(Metadata));
     }
 
     /**

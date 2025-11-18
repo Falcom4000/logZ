@@ -128,7 +128,10 @@ void decode(const std::byte* ptr, StringRingBuffer::StringWriter& writer) {
         std::apply([&](auto&&... args) {
             // Use std::format_to to write directly to the ring buffer
             // No temporary string allocation
-            std::format_to(writer.get_iterator(), FMT.sv(), std::forward<decltype(args)>(args)...);
+            std::format_to_n(writer.get_iterator(),
+                             writer.get_free_space(),
+                             FMT.sv(),
+                             std::forward<decltype(args)>(args)...);
         }, args_tuple);
     }
 }

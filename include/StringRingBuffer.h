@@ -152,6 +152,13 @@ public:
             return Iterator(this);
         }
 
+        /**
+         * @brief Get remaining free space in the underlying buffer
+         */
+        size_t get_free_space() const {
+            return buffer_->get_free_space();
+        }
+
     private:
         StringRingBuffer* buffer_;
     };
@@ -206,6 +213,14 @@ public:
      */
     void flush_to_sinker(Sinker* sinker);
 
+    /**
+     * @brief Get free space in the buffer
+     */
+     size_t get_free_space() const {
+        return capacity_ - get_used_space();
+    }
+
+
 private:
     /**
      * @brief Get used space in the buffer
@@ -218,12 +233,6 @@ private:
         }
     }
 
-    /**
-     * @brief Get free space in the buffer
-     */
-    size_t get_free_space() const {
-        return capacity_ - get_used_space() - 1;  // -1 to distinguish full from empty
-    }
 
     /**
      * @brief Write bytes to the buffer

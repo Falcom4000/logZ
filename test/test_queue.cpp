@@ -37,6 +37,7 @@ TEST_F(QueueTest, BasicWriteRead) {
     std::byte* write_ptr = queue.reserve_write(msg_len);
     ASSERT_NE(write_ptr, nullptr);
     std::memcpy(write_ptr, msg, msg_len);
+    queue.commit_write(msg_len);
     
     // Read
     std::byte* read_ptr = queue.read(msg_len);
@@ -58,6 +59,7 @@ TEST_F(QueueTest, ReserveWrite) {
     
     // Manual write
     std::memcpy(write_ptr, msg, msg_len);
+    queue.commit_write(msg_len);
     
     // Read
     std::byte* read_ptr = queue.read(msg_len);
@@ -77,6 +79,7 @@ TEST_F(QueueTest, AutoExpansion) {
     std::byte* ptr1 = queue.reserve_write(msg1_len);
     ASSERT_NE(ptr1, nullptr);
     std::memcpy(ptr1, msg1, msg1_len);
+    queue.commit_write(msg1_len);
     
     EXPECT_EQ(queue.node_count(), 1);
     
@@ -87,6 +90,7 @@ TEST_F(QueueTest, AutoExpansion) {
     std::byte* ptr2 = queue.reserve_write(msg2_len);
     ASSERT_NE(ptr2, nullptr);
     std::memcpy(ptr2, msg2, msg2_len);
+    queue.commit_write(msg2_len);
     
     // Should have created a new node
     EXPECT_EQ(queue.node_count(), 2);
@@ -127,6 +131,7 @@ TEST_F(QueueTest, MultipleOperations) {
         std::byte* ptr = queue.reserve_write(msg.size());
         ASSERT_NE(ptr, nullptr);
         std::memcpy(ptr, msg.c_str(), msg.size());
+        queue.commit_write(msg.size());
     }
     
     // Read all messages
@@ -151,6 +156,7 @@ TEST_F(QueueTest, Available) {
     std::byte* ptr_write = queue.reserve_write(50);
     ASSERT_NE(ptr_write, nullptr);
     std::memcpy(ptr_write, data, 50);
+    queue.commit_write(50);
     
     EXPECT_EQ(queue.available_read(), 50);
     EXPECT_EQ(queue.available_write(), 50);
@@ -190,6 +196,7 @@ TEST_F(QueueTest, LargeData) {
     std::byte* ptr = queue.reserve_write(large_data.size());
     ASSERT_NE(ptr, nullptr);
     std::memcpy(ptr, large_data.data(), large_data.size());
+    queue.commit_write(large_data.size());
     
     // Should have expanded to accommodate
     EXPECT_GE(queue.current_capacity(), 200);
@@ -215,12 +222,14 @@ TEST_F(QueueTest, ChainExpansion) {
     std::byte* ptr1 = queue.reserve_write(data1.size());
     ASSERT_NE(ptr1, nullptr);
     std::memcpy(ptr1, data1.data(), data1.size());
+    queue.commit_write(data1.size());
     
     // Trigger second buffer (64 bytes)
     std::vector<char> data2(60, 'B');
     std::byte* ptr2 = queue.reserve_write(data2.size());
     ASSERT_NE(ptr2, nullptr);
     std::memcpy(ptr2, data2.data(), data2.size());
+    queue.commit_write(data2.size());
     
     EXPECT_EQ(queue.node_count(), 2);
     
@@ -229,6 +238,7 @@ TEST_F(QueueTest, ChainExpansion) {
     std::byte* ptr3 = queue.reserve_write(data3.size());
     ASSERT_NE(ptr3, nullptr);
     std::memcpy(ptr3, data3.data(), data3.size());
+    queue.commit_write(data3.size());
     
     EXPECT_EQ(queue.node_count(), 3);
     EXPECT_EQ(queue.current_capacity(), 128);
@@ -272,6 +282,7 @@ TEST_F(QueueTest, ProducerConsumer) {
         std::byte* ptr = queue.reserve_write(msg.size());
         ASSERT_NE(ptr, nullptr);
         std::memcpy(ptr, msg.c_str(), msg.size());
+        queue.commit_write(msg.size());
         
         // Consume
         std::byte* read_ptr = queue.read(msg.size());
@@ -303,6 +314,7 @@ TEST_F(QueueTest, Multithreaded) {
                 std::byte* ptr = queue.reserve_write(msg_len);
                 if (ptr != nullptr) {
                     std::memcpy(ptr, msg, msg_len);
+                    queue.commit_write(msg_len);
                     written = true;
                 } else {
                     std::this_thread::yield();
@@ -365,6 +377,7 @@ TEST_F(RingBytesTest, BasicOperations) {
     std::byte* write_ptr = ring.reserve_write(msg_len);
     ASSERT_NE(write_ptr, nullptr);
     std::memcpy(write_ptr, msg, msg_len);
+    ring.commit_write(msg_len);
     
     // Read
     std::byte* read_ptr = ring.read(msg_len);
@@ -385,6 +398,7 @@ TEST_F(RingBytesTest, ReserveCommit) {
     for (int i = 0; i < 10; ++i) {
         ptr[i] = static_cast<std::byte>(i);
     }
+    ring.commit_write(10);
     
     // Read and verify
     std::byte* read_ptr = ring.read(10);
@@ -408,6 +422,7 @@ TEST_F(RingBytesTest, CapacityLimits) {
     std::byte* ptr = ring.reserve_write(50);
     ASSERT_NE(ptr, nullptr);
     std::memcpy(ptr, data.data(), 50);
+    ring.commit_write(50);
     
     EXPECT_EQ(ring.available_write(), 0);
     EXPECT_EQ(ring.available_read(), 50);
@@ -426,6 +441,7 @@ TEST_F(RingBytesTest, WrapAround) {
     std::byte* ptr1 = ring.reserve_write(20);
     ASSERT_NE(ptr1, nullptr);
     std::memcpy(ptr1, data1.data(), 20);
+    ring.commit_write(20);
     
     // Read 20 bytes
     ring.read(20);
@@ -436,6 +452,7 @@ TEST_F(RingBytesTest, WrapAround) {
     std::byte* ptr = ring.reserve_write(25);
     ASSERT_NE(ptr, nullptr);
     std::memcpy(ptr, data2.data(), 25);
+    ring.commit_write(25);
     
     // Read and verify
     std::byte* read_ptr = ring.read(25);

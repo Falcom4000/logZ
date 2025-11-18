@@ -51,19 +51,21 @@ public:
      * @param size The number of bytes to reserve
      * @return Pointer to the reserved space, or nullptr if not enough space
      * 
-     * This function reserves space in the buffer for writing. The actual write
-     * should be done by the caller, followed by a call to commit_write().
+     * This function checks if there's enough space and returns a pointer.
+     * The position is NOT moved until commit_write() is called.
      * 
      * NOTE: This implementation does NOT handle wrap-around writes.
      * If a write would cross the buffer boundary, nullptr is returned.
      * The caller (Queue) should handle this by allocating a new node.
+     * 
+     * IMPORTANT: Must call commit_write() after writing data to make it visible to readers.
      */
     std::byte* reserve_write(size_t size) {
         if (size == 0 || size > capacity_) {
             return nullptr;
         }
 
-        // Load current positions
+        // Load current positions (don't modify them yet)
         uint64_t current_write = write_pos_.load(std::memory_order_relaxed);
         uint64_t current_read = read_pos_.load(std::memory_order_acquire);
 
@@ -84,10 +86,22 @@ public:
         if (pos + size > capacity_) [[unlikely]] {
             return nullptr;  // Would wrap around, need new node
         }
-        write_pos_.store(current_write + size, std::memory_order_release);
 
-        // Return pointer to the reserved space
+        // Don't move write_pos_ yet! Just return the pointer.
+        // The caller will write data and then call commit_write().
         return &buffer_[pos];
+    }
+    
+    /**
+     * @brief Commit the write operation
+     * @param size Number of bytes to commit as written
+     * 
+     * This advances the write position and makes the data visible to readers.
+     * Must be called after reserve_write() and writing data.
+     */
+    void commit_write(size_t size) {
+        uint64_t current = write_pos_.load(std::memory_order_relaxed);
+        write_pos_.store(current + size, std::memory_order_release);
     }
 
     /**
@@ -177,7 +191,7 @@ private:
 
     const size_t capacity_;                    // Fixed capacity of the buffer (power of 2)
     const size_t capacity_mask_;               // Bit mask for fast modulo (capacity - 1)
-    alignas(64) std::atomic<uint64_t> write_pos_;          // Current write position (优化: 合并了 write_commit_pos_)
+    alignas(64) std::atomic<uint64_t> write_pos_;          // Write position (visible to readers after commit)
     alignas(64) std::atomic<uint64_t> read_pos_;           // Current read position
     std::unique_ptr<std::byte[]> buffer_;      // The actual buffer
 };

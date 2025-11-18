@@ -160,6 +160,9 @@ void Logger::log_impl(const Args&... args) {
     // Encode metadata and arguments into buffer using Encoder functions
     // Pass args_size to avoid redundant calculation
     encode_log_entry<Fmt, Level>(buffer, timestamp, args_size, args...);
+    
+    // Commit the write to make data visible to backend thread
+    queue.commit_write(total_size);
 }
 
 } // namespace logZ

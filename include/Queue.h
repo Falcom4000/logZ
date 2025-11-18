@@ -124,6 +124,18 @@ public:
         
         return ptr;
     }
+    
+    /**
+     * @brief Commit the write operation
+     * @param size Number of bytes to commit as written
+     * 
+     * This makes the written data visible to readers.
+     * Must be called after reserve_write() and writing data.
+     */
+    void commit_write(size_t size) {
+        Node* current_write = write_node_;
+        current_write->ring->commit_write(size);
+    }
 
     /**
      * @brief Read data from the queue

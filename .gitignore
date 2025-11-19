@@ -35,3 +35,5 @@ Thumbs.db
 
 *.log
 *.txt
+
+third_party/*

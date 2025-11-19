@@ -115,10 +115,11 @@ void decode(const std::byte* ptr, StringRingBuffer::StringWriter& writer) {
             }()...
         };
         
-        // Format and write directly to writer using format_to
+        // Format and write directly to writer using format_to_n
         std::apply([&](auto&&... args) {
-            // Use std::format_to to write directly to the ring buffer
+            // Use std::format_to_n to write directly to the ring buffer
             // No temporary string allocation
+            // The Iterator automatically updates the buffer position via push_back
             std::format_to_n(writer.get_iterator(),
                              writer.get_free_space(),
                              FMT.sv(),

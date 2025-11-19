@@ -413,22 +413,33 @@ private:
     /**
      * @brief Process a specific log entry from a queue
      * @param queue The queue to read from
-     * @param metadata The metadata pointer (from peek)
+     * @param metadata The metadata pointer (from peek in process_one_log)
+     * 
+     * Note: metadata_ptr points to data already read in process_one_log().
+     * We need to read the complete entry (Metadata + args) again because
+     * the previous read() calls in process_one_log() were not committed.
      */
     void process_log_from_queue(Queue* queue, const Metadata* metadata_ptr) {
-        // Copy metadata to stack FIRST
+        // Copy metadata to stack FIRST (from the peeked metadata)
         Metadata metadata = *metadata_ptr;
         
-        
-        // Read args buffer
-        std::byte* args_buffer = nullptr;
-        if (metadata.args_size > 0) {
-            args_buffer = queue->read(metadata.args_size);
-            if (args_buffer == nullptr) {
-                // Failed to read args
-                return;
-            }
+        // Read the complete log entry: Metadata + args
+        // Since previous read() calls in process_one_log() were not committed,
+        // we need to read from the beginning again
+        size_t total_size = sizeof(Metadata) + metadata.args_size;
+        std::byte* entry_buffer = queue->read(total_size);
+        if (entry_buffer == nullptr) {
+            // Failed to read complete entry
+            return;
         }
+        
+        // Extract metadata and args from the complete entry
+        const Metadata* actual_metadata = reinterpret_cast<const Metadata*>(entry_buffer);
+        std::byte* args_buffer = (metadata.args_size > 0) ? 
+            (entry_buffer + sizeof(Metadata)) : nullptr;
+        
+        // Use the metadata from the complete entry (in case it differs from peeked one)
+        metadata = *actual_metadata;
         
         // Process the log entry
         auto writer = output_buffer_.get_writer(&sinker_);
@@ -449,8 +460,8 @@ private:
         // Increment log counter
         ++log_count_;
         
-        // Commit read
-        queue->commit_read(metadata.args_size + sizeof(Metadata));
+        // Commit read (complete entry: Metadata + args)
+        queue->commit_read(total_size);
     }
 
     /**

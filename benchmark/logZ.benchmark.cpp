@@ -51,6 +51,10 @@ int main() {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     std::cout << "Writing first log..." << std::endl;
+    
+    // 记录benchmark开始时间（用于测量吞吐量）
+    auto benchmark_start = std::chrono::steady_clock::now();
+    
     std::vector<std::thread> threads;
     std::vector<std::vector<int>> latencies(num_threads, std::vector<int>(logs_per_thread, 0));
     std::vector<double> thread_durations(num_threads, 0.0);
@@ -81,16 +85,30 @@ int main() {
                   << total_logs / benchmark_duration << std::endl;
     }
     
-    // 等待日志写入完成
-    std::cout << "\nWaiting for logs to be written..." << std::endl;
-    std::this_thread::sleep_for(std::chrono::seconds(5));
+    // 等待后端处理完所有日志（等待log_count达到800万）
+    std::cout << "\nWaiting for backend to process all logs..." << std::endl;
+    const uint64_t expected_log_count = total_logs;  // 8 threads × 1,000,000 = 8,000,000
     
-    // 输出日志计数
+    while (backend.get_log_count() < expected_log_count) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    
+    // 记录benchmark结束时间
+    auto benchmark_end = std::chrono::steady_clock::now();
+    auto total_duration = std::chrono::duration<double>(benchmark_end - benchmark_start).count();
+    
+    // 获取最终日志计数
     uint64_t log_count = backend.get_log_count();
-    std::cout << "\n=== Log Count ===" << std::endl;
+    
+    // 计算后端吞吐量（Throughput）
+    double throughput = (log_count > 0 && total_duration > 0) ? log_count / total_duration : 0.0;
+    
+    std::cout << "\n=== Backend Throughput ===" << std::endl;
     std::cout << "Total logs written by backend: " << log_count << std::endl;
     std::cout << "Expected logs: " << total_logs << std::endl;
-    if (log_count > 0) {
+    std::cout << "Total duration: " << std::fixed << std::setprecision(3) << total_duration << " s" << std::endl;
+    std::cout << "Backend Throughput: " << std::fixed << std::setprecision(2) << throughput << " logs/sec" << std::endl;
+    if (log_count > 0 && total_logs > 0) {
         std::cout << "Match rate: " << std::fixed << std::setprecision(2) 
                   << (100.0 * log_count / total_logs) << "%" << std::endl;
     }

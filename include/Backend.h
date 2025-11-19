@@ -131,8 +131,8 @@ public:
             m_current_list->push_back(wrapper);
         }
         
-        // Signal backend to sync
-        m_dirty.store(true, std::memory_order_release);
+        // Signal backend to add to snapshot list
+        m_add_flag.store(true, std::memory_order_release);
         
         return raw_ptr;
     }
@@ -164,8 +164,10 @@ public:
                 // Don't remove from current_list here!
                 // Let Backend discover it via orphaned flag
                 
-                // Signal backend to check for orphaned queues
-                m_dirty.store(true, std::memory_order_release);
+                // Signal backend to remove from snapshot list if queue is empty
+                if (wrapper->queue->is_empty()) {
+                    m_delete_flag.store(true, std::memory_order_release);
+                }
                 return;
             }
         }
@@ -266,14 +268,40 @@ public:
 
 private:
     /**
-     * @brief Synchronize snapshot list with current list
-     * Called when m_dirty flag is set
-     * This is the only time Backend thread acquires the lock
+     * @brief Add new queues to snapshot list
+     * Called when m_add_flag is set
+     * This is the only time Backend thread acquires the lock for adding
      */
-    void sync_snapshot_list() {
+    void add_to_snapshot_list() {
         std::lock_guard<std::mutex> lock(m_writer_mutex);
-        m_snapshot_list = m_current_list;  // shared_ptr assignment, ref count managed automatically
-        m_dirty.store(false, std::memory_order_relaxed);
+
+        m_snapshot_list = m_current_list;
+        m_add_flag.store(false, std::memory_order_relaxed);
+    }
+
+    void remove_from_snapshot_list() {
+        std::lock_guard<std::mutex> lock(m_writer_mutex);
+        
+        auto& vec = *m_current_list;
+        std::vector<std::shared_ptr<QueueWrapper>> orphaned_queues;
+        
+        vec.erase(
+            std::remove_if(vec.begin(), vec.end(),
+                [&orphaned_queues](const auto& wrapper) {
+                    if (wrapper->orphaned.load(std::memory_order_acquire) &&
+                        wrapper->queue->is_empty()) {
+                        orphaned_queues.push_back(wrapper);
+                        return true;
+                    }
+                    return false;
+                }),
+            vec.end()
+        );
+        
+        orphaned_queues.clear();  // Delete orphaned queues immediately
+        
+        m_snapshot_list = m_current_list;
+        m_delete_flag.store(false, std::memory_order_relaxed);
     }
     
     /**
@@ -283,20 +311,24 @@ private:
         static int counter = 0;
         
         while (running_.load(std::memory_order_relaxed)) {
-            // Check dirty flag (only atomic load, no lock)
-            // Hot path: Usually not dirty
-            if (m_dirty.load(std::memory_order_acquire)) [[unlikely]] {
-                sync_snapshot_list();  // Sync when updates detected
+            // Check add flag (only atomic load, no lock)
+            // Hot path: Usually no new queues
+            if (m_add_flag.load(std::memory_order_acquire)) [[unlikely]] {
+                add_to_snapshot_list();  // Add new queue to snapshot
+            }
+            
+            // Check delete flag (only atomic load, no lock)
+            // Hot path: Usually no queues to remove
+            if (m_delete_flag.load(std::memory_order_acquire)) [[unlikely]] {
+                remove_from_snapshot_list();  // Remove orphaned queues from snapshot
             }
             
             bool processed_any = process_one_log();
 
-            // Periodically remove orphaned queues and flush
-            // Reduced frequency: every 50000 iterations instead of 10000
+            // Periodically flush to disk
             if (++counter >= 50000) {  // Every 50000 iterations
                 counter = 0;
                 flush_to_disk();
-                remove_orphaned_queues();
             }
 
             // If no work was done, sleep briefly to avoid busy-waiting
@@ -307,15 +339,15 @@ private:
         }
 
         // Final sync and drain
-        if (m_dirty.load(std::memory_order_acquire)) {
-            sync_snapshot_list();
+        if (m_add_flag.load(std::memory_order_acquire)) {
+            add_to_snapshot_list();
+        }
+        if (m_delete_flag.load(std::memory_order_acquire)) {
+            remove_from_snapshot_list();
         }
         while (process_one_log()) {
             // Keep processing until all queues are empty
         }
-        
-        // Final cleanup
-        remove_orphaned_queues();
         
         // Final flush
         flush_to_disk();
@@ -338,17 +370,7 @@ private:
         // Traverse all queue heads to find minimum timestamp
         // LOCK-FREE: Direct traversal of m_snapshot_list, no atomic operations
         for (const auto& wrapper : *m_snapshot_list) {
-            if (wrapper && wrapper->queue) [[likely]] {
-                // Check if orphaned and empty - skip it
-                if (wrapper->orphaned.load(std::memory_order_acquire)) [[unlikely]] {
-                    if (wrapper->queue->is_empty()) {
-                        // Will be removed in next cleanup cycle
-                        continue;
-                    }
-                    // Not empty yet, continue processing
-                }
-                
-                // Peek metadata to get timestamp (read without commit)
+            if (wrapper && wrapper->queue && !wrapper->queue->is_empty()) [[likely]] {
                 std::byte* meta_buffer = wrapper->queue->read(sizeof(Metadata));
                 if (meta_buffer != nullptr) {
                     const auto* meta = reinterpret_cast<const Metadata*>(meta_buffer);
@@ -501,58 +523,6 @@ private:
     }
     
     /**
-     * @brief Remove orphaned queues that are empty
-     * Called periodically in consume_loop
-     * 
-     * Single-phase deletion:
-     * 1. Sync m_snapshot_list first to ensure it's up-to-date
-     * 2. Find orphaned and empty queues
-     * 3. Remove from m_current_list (Copy-on-Write)
-     * 4. Sync m_snapshot_list again (so it no longer references deleted queues)
-     * 5. Delete queues immediately (shared_ptr ref count drops -> Queues deleted)
-     * 
-     * This ensures process_one_log() never accesses deleted memory
-     */
-    void remove_orphaned_queues() {
-        std::lock_guard<std::mutex> lock(m_writer_mutex);
-        
-        // Sync m_snapshot_list first (in case there were updates from other threads)
-        if (m_dirty.load(std::memory_order_relaxed)) {
-            m_snapshot_list = m_current_list;
-            m_dirty.store(false, std::memory_order_relaxed);
-        }
-        
-        // Find orphaned and empty queues, and build new list in one pass
-        // After sync above, m_snapshot_list and m_current_list point to the same vector
-        // We need Copy-on-Write to avoid modifying the vector that m_snapshot_list is reading
-        auto new_current = std::make_shared<std::vector<std::shared_ptr<QueueWrapper>>>();
-        new_current->reserve(m_current_list->size());  // Pre-allocate to avoid reallocation
-        
-        std::vector<std::shared_ptr<QueueWrapper>> orphaned_queues;
-        for (const auto& wrapper : *m_current_list) {
-            if (wrapper->orphaned.load(std::memory_order_acquire) &&
-                wrapper->queue->is_empty()) {
-                orphaned_queues.push_back(wrapper);
-            } else {
-                new_current->push_back(wrapper);
-            }
-        }
-        
-        if (orphaned_queues.empty()) {
-            return;
-        }
-        
-        m_current_list = new_current;
-        
-        // Sync m_snapshot_list again (so it no longer references deleted queues)
-        m_snapshot_list = m_current_list;
-        m_dirty.store(false, std::memory_order_relaxed);
-        
-        // Delete queues immediately (shared_ptr ref count drops -> Queues deleted)
-        orphaned_queues.clear();
-    }
-    
-    /**
      * @brief Remove all queues (called in destructor)
      */
     void remove_all_queues() {
@@ -590,7 +560,8 @@ private:
     std::shared_ptr<std::vector<std::shared_ptr<QueueWrapper>>> m_snapshot_list;  // Backend's snapshot for reading (lock-free)
     std::shared_ptr<std::vector<std::shared_ptr<QueueWrapper>>> m_current_list;   // Current list for updates (protected by mutex)
     std::mutex m_writer_mutex;                                                     // Protects current_list
-    std::atomic<bool> m_dirty{false};                                              // Dirty flag for sync
+    std::atomic<bool> m_add_flag{false};                                           // Flag to add new queue to snapshot
+    std::atomic<bool> m_delete_flag{false};                                        // Flag to remove orphaned queue from snapshot
 };
 
 } // namespace logZ

@@ -266,6 +266,21 @@ public:
         dropped_messages_.fetch_add(1, std::memory_order_relaxed);
     }
 
+    /**
+     * @brief Get the number of logs written
+     * @return Total count of logs that have been written
+     */
+    uint64_t get_log_count() const {
+        return log_count_;
+    }
+
+    /**
+     * @brief Reset the log counter
+     */
+    void reset_log_count() {
+        log_count_ = 0;
+    }
+
 private:
     /**
      * @brief Add new queues to snapshot list
@@ -431,6 +446,9 @@ private:
         
         writer.append("\n");
         
+        // Increment log counter
+        ++log_count_;
+        
         // Commit read
         queue->commit_read(metadata.args_size + sizeof(Metadata));
     }
@@ -554,6 +572,7 @@ private:
     
     // Statistics
     std::atomic<uint64_t> dropped_messages_{0};  // Counter for dropped messages
+    uint64_t log_count_{0};                      // Counter for logs written (single-threaded backend)
     
     // Double-buffering for lock-free traversal
     // Now using shared_ptr<QueueWrapper> for automatic lifetime management

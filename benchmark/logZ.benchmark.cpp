@@ -81,6 +81,20 @@ int main() {
                   << total_logs / benchmark_duration << std::endl;
     }
     
+    // 等待日志写入完成
+    std::cout << "\nWaiting for logs to be written..." << std::endl;
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+    
+    // 输出日志计数
+    uint64_t log_count = backend.get_log_count();
+    std::cout << "\n=== Log Count ===" << std::endl;
+    std::cout << "Total logs written by backend: " << log_count << std::endl;
+    std::cout << "Expected logs: " << total_logs << std::endl;
+    if (log_count > 0) {
+        std::cout << "Match rate: " << std::fixed << std::setprecision(2) 
+                  << (100.0 * log_count / total_logs) << "%" << std::endl;
+    }
+    
     // 合并所有线程的latency数据到result
     std::vector<int> result;
     result.reserve(logs_per_thread * num_threads);
@@ -136,10 +150,6 @@ int main() {
     } else {
         std::cerr << "Failed to open output file: " << filename << std::endl;
     }
-
-    // 等待日志写入完成
-    std::cout << "\nWaiting for logs to be written..." << std::endl;
-    std::this_thread::sleep_for(std::chrono::seconds(5));
     
     std::cout << "Stopping backend..." << std::endl;
     backend.stop();

@@ -133,16 +133,18 @@ struct QueueWrapper {
    ↓
 3. 线程退出时 thread_local 析构
    ↓
-4. Backend::mark_queue_abandoned()
-   - 设置 abandoned = true
+4. Backend::mark_queue_orphaned()
+   - 设置 orphaned = true
    - 不删除 Queue！
    ↓
 5. Backend 定期检查
-   - 发现 abandoned && queue->is_empty()
+   - 发现 orphaned && queue->is_empty()
    ↓
-6. 两阶段删除
-   - Phase 1: 从 m_master_list 移除 → m_pending_deletion
-   - Phase 2: 下次调用时销毁（此时 Backend 已不再访问）
+6. 单阶段删除
+   - 同步 m_snapshot_list
+   - 从 m_current_list 移除
+   - 再次同步 m_snapshot_list（确保不再引用）
+   - 立即销毁队列
 ```
 
 ### 4. **Metadata** - 日志元数据
@@ -203,10 +205,10 @@ while (running_) {
     // 从所有队列中选择最小时间戳的日志
     process_one_log();
     
-    // 定期刷盘和回收
+    // 定期刷盘和清理
     if (++counter >= 50000) {
         flush_to_disk();
-        reclaim_abandoned_queues();
+        remove_orphaned_queues();
     }
 }
 ```

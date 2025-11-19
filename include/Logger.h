@@ -128,7 +128,7 @@ inline Queue& Logger::get_thread_queue() {
         ~ThreadLocalData() {
             if (queue_ptr) {
                 auto& backend = Logger::get_backend<MinLevel>();
-                backend.mark_queue_abandoned(queue_ptr);
+                backend.mark_queue_orphaned(queue_ptr);
             }
         }
     };

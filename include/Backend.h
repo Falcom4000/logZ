@@ -283,22 +283,17 @@ private:
         std::lock_guard<std::mutex> lock(m_writer_mutex);
         
         auto& vec = *m_current_list;
-        std::vector<std::shared_ptr<QueueWrapper>> orphaned_queues;
         
+        // Remove orphaned and empty queues
+        // erase will destroy shared_ptr, and if ref count drops to 0, queue will be automatically deleted
         vec.erase(
             std::remove_if(vec.begin(), vec.end(),
-                [&orphaned_queues](const auto& wrapper) {
-                    if (wrapper->orphaned.load(std::memory_order_acquire) &&
-                        wrapper->queue->is_empty()) {
-                        orphaned_queues.push_back(wrapper);
-                        return true;
-                    }
-                    return false;
+                [](const auto& wrapper) {
+                    return wrapper->orphaned.load(std::memory_order_acquire) &&
+                           wrapper->queue->is_empty();
                 }),
             vec.end()
         );
-        
-        orphaned_queues.clear();  // Delete orphaned queues immediately
         
         m_snapshot_list = m_current_list;
         m_delete_flag.store(false, std::memory_order_relaxed);

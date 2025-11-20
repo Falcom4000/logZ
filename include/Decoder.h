@@ -27,15 +27,6 @@ namespace logZ {
  * void (*)(const std::byte*, StringRingBuffer::StringWriter&)
  */
 
-// Helper trait to detect FixedString (must match Encoder.h)
-template<typename T>
-struct is_fixed_string : std::false_type {};
-
-template<size_t N>
-struct is_fixed_string<FixedString<N>> : std::true_type {};
-
-template<typename T>
-inline constexpr bool is_fixed_string_v = is_fixed_string<T>::value;
 
 /**
  * @brief Helper to decode and extract value from a single argument

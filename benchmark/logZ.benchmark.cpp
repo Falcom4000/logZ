@@ -17,8 +17,9 @@ inline uint64_t rdtsc() {
     return __rdtsc();
 }
 // 工作线程函数
-void worker_thread(int thread_id, int num_logs, std::vector<int>& latency) {
+void worker_thread(int thread_id, int num_logs, std::vector<int>& latency, std::vector<double>& thread_durations) {
     std::string s = "test";
+    auto thread_start = std::chrono::steady_clock::now();
     // 写日志
     for (int i = 0; i < num_logs; ++i) {
         s[3] = 'a' + (i % 26);
@@ -32,11 +33,14 @@ void worker_thread(int thread_id, int num_logs, std::vector<int>& latency) {
         }
     }
     std::cout << "Thread " << thread_id << " completed " << num_logs << " logs." << std::endl;
+    auto thread_end = std::chrono::steady_clock::now();
+    std::chrono::duration<double> elapsed = thread_end - thread_start;
+    thread_durations[thread_id] = elapsed.count();
 }
 
 int main() {
     // 创建多个线程
-    constexpr int num_threads = 4;
+    constexpr int num_threads = 8;
     constexpr int logs_per_thread = 1000000;
     auto& backend = Logger::get_backend();  // Use Logger's get_backend()
     
@@ -49,9 +53,10 @@ int main() {
     std::cout << "Writing first log..." << std::endl;
     std::vector<std::thread> threads;
     std::vector<std::vector<int>> latencies(num_threads, std::vector<int>(logs_per_thread, 0));
+    std::vector<double> thread_durations(num_threads, 0.0);
     // 启动工作线程（不需要手动注册）
     for (int i = 0; i < num_threads; ++i) {
-        threads.emplace_back(worker_thread, i, logs_per_thread, std::ref(latencies[i]));
+        threads.emplace_back(worker_thread, i, logs_per_thread, std::ref(latencies[i]), std::ref(thread_durations));
     }
     
     // 等待所有线程完成
@@ -59,6 +64,22 @@ int main() {
         t.join();
     }
     std::cout << "All threads joined." << std::endl;
+
+    std::cout << "\n=== Thread Durations & QPS ===" << std::endl;
+    double total_qps = 0.0;
+    int total_logs = num_threads * logs_per_thread;
+    for (int i = 0; i < num_threads; ++i) {
+        double duration_sec = thread_durations[i];
+        double qps = duration_sec > 0 ? logs_per_thread / duration_sec : 0.0;
+        total_qps += qps;
+        std::cout << "Thread " << i << ": " << duration_sec << " s, QPS = " << qps << std::endl;
+    }
+    std::cout << "Aggregate QPS (sum of per-thread): " << total_qps << std::endl;
+    double benchmark_duration = *std::max_element(thread_durations.begin(), thread_durations.end());
+    if (benchmark_duration > 0) {
+        std::cout << "Overall QPS (total_logs / max_thread_time): "
+                  << total_logs / benchmark_duration << std::endl;
+    }
     
     // 合并所有线程的latency数据到result
     std::vector<int> result;

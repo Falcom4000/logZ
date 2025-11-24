@@ -8,3 +8,13 @@ cc_binary(
     linkopts = ["-pthread"],
     copts = ["-std=c++20"],
 )
+
+cc_binary(
+    name = "Quill.benchmark",
+    srcs = ["Quill.benchmark.cpp"],
+    deps = [
+        "//third_party/quill:quill",
+    ],
+    linkopts = ["-pthread"],
+    copts = ["-std=c++20"],
+)

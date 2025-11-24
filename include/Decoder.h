@@ -27,15 +27,6 @@ namespace logZ {
  * void (*)(const std::byte*, StringRingBuffer::StringWriter&)
  */
 
-// Helper trait to detect FixedString (must match Encoder.h)
-template<typename T>
-struct is_fixed_string : std::false_type {};
-
-template<size_t N>
-struct is_fixed_string<FixedString<N>> : std::true_type {};
-
-template<typename T>
-inline constexpr bool is_fixed_string_v = is_fixed_string<T>::value;
 
 /**
  * @brief Helper to decode and extract value from a single argument
@@ -124,10 +115,11 @@ void decode(const std::byte* ptr, StringRingBuffer::StringWriter& writer) {
             }()...
         };
         
-        // Format and write directly to writer using format_to
+        // Format and write directly to writer using format_to_n
         std::apply([&](auto&&... args) {
-            // Use std::format_to to write directly to the ring buffer
+            // Use std::format_to_n to write directly to the ring buffer
             // No temporary string allocation
+            // The Iterator automatically updates the buffer position via push_back
             std::format_to_n(writer.get_iterator(),
                              writer.get_free_space(),
                              FMT.sv(),

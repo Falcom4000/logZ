@@ -59,15 +59,22 @@ public:
      * The caller (Queue) should handle this by allocating a new node.
      * 
      * IMPORTANT: Must call commit_write() after writing data to make it visible to readers.
+     * 
+     * Memory Order 优化说明 (SPSC):
+     * - write_pos_: relaxed (只有 producer 写，自己读自己写的值)
+     * - read_pos_: relaxed (只需要一个大致的值来检查空间，偶尔滞后没关系)
+     *   在 SPSC 中，如果 read_pos 稍微滞后，最坏情况是误判队列已满，
+     *   这是安全的（丢弃消息），不会导致数据竞争
      */
+    __attribute__((always_inline, hot))
     std::byte* reserve_write(size_t size) {
-        if (size == 0 || size > capacity_) {
+        if (size == 0 || size > capacity_) [[unlikely]] {
             return nullptr;
         }
 
-        // Load current positions (don't modify them yet)
+        // Load current positions with relaxed ordering (SPSC optimization)
         uint64_t current_write = write_pos_.load(std::memory_order_relaxed);
-        uint64_t current_read = read_pos_.load(std::memory_order_acquire);
+        uint64_t current_read = read_pos_.load(std::memory_order_relaxed);
 
         // Calculate available space
         uint64_t available = capacity_ - (current_write - current_read);
@@ -99,6 +106,7 @@ public:
      * This advances the write position and makes the data visible to readers.
      * Must be called after reserve_write() and writing data.
      */
+    __attribute__((always_inline, hot))
     void commit_write(size_t size) {
         uint64_t current = write_pos_.load(std::memory_order_relaxed);
         write_pos_.store(current + size, std::memory_order_release);

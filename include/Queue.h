@@ -39,11 +39,13 @@ public:
      */
     explicit Queue(size_t initial_capacity = 4096)
         : write_node_(nullptr)
-        , read_node_(nullptr) {
+        , read_node_(nullptr)
+        , write_ring_(nullptr) {
         // Create the first node
         Node* first_node = new Node(initial_capacity);
         write_node_ = first_node;
         read_node_ = first_node;
+        write_ring_ = first_node->ring.get();  // 缓存 RingBytes 指针，避免间接访问
     }
 
     ~Queue() {
@@ -70,20 +72,32 @@ public:
      * If the current RingBytes doesn't have enough space, a new one with double
      * the capacity will be created automatically.
      */
+    __attribute__((always_inline, hot))
     std::byte* reserve_write(size_t size) {
-        if (size == 0) {
+        if (size == 0) [[unlikely]] {
             return nullptr;
         }
 
-        Node* current_write = write_node_;
-        std::byte* ptr = current_write->ring->reserve_write(size);
+        // 快速路径：直接使用缓存的 RingBytes 指针，避免间接访问
+        std::byte* ptr = write_ring_->reserve_write(size);
         
         // Hot path: Usually succeeds on first try
         if (ptr != nullptr) [[likely]] {
             return ptr;
         }
 
-        // Current RingBytes is full
+        // 慢速路径：需要扩容
+        return reserve_write_slow(size);
+    }
+    
+private:
+    /**
+     * @brief Slow path for reserve_write when current RingBytes is full
+     */
+    __attribute__((noinline, cold))
+    std::byte* reserve_write_slow(size_t size) {
+        Node* current_write = write_node_;
+        
         // If already at max capacity (64MB), reject the write (drop message)
         if (current_write->capacity >= MAX_NODE_CAPACITY) [[unlikely]] {
             return nullptr;  // Drop message when at max capacity
@@ -111,7 +125,7 @@ public:
         Node* new_node = new Node(new_capacity);
         
         // Try to reserve in the new node
-        ptr = new_node->ring->reserve_write(size);
+        std::byte* ptr = new_node->ring->reserve_write(size);
         if (ptr == nullptr) {
             // Size is too large even for the new node
             delete new_node;
@@ -121,9 +135,12 @@ public:
         // Link the new node (atomic: producer writes, consumer reads)
         current_write->next.store(new_node, std::memory_order_release);
         write_node_ = new_node;  // Only producer accesses write_node_
+        write_ring_ = new_node->ring.get();  // 更新缓存的指针
         
         return ptr;
     }
+    
+public:
     
     /**
      * @brief Commit the write operation
@@ -132,9 +149,10 @@ public:
      * This makes the written data visible to readers.
      * Must be called after reserve_write() and writing data.
      */
+    __attribute__((always_inline, hot))
     void commit_write(size_t size) {
-        Node* current_write = write_node_;
-        current_write->ring->commit_write(size);
+        // 直接使用缓存的 RingBytes 指针
+        write_ring_->commit_write(size);
     }
 
     /**
@@ -265,8 +283,9 @@ public:
     }
 
 private:
-    alignas(64) Node* write_node_;  // Only accessed by producer thread
-    alignas(64) Node* read_node_;   // Only accessed by consumer thread
+    alignas(64) Node* write_node_;    // Only accessed by producer thread
+    alignas(64) RingBytes* write_ring_;  // 缓存当前写入的 RingBytes 指针，避免间接访问
+    alignas(64) Node* read_node_;     // Only accessed by consumer thread
 };
 
 }  // namespace logZ

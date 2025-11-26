@@ -5,12 +5,14 @@
 #include "Decoder.h"
 #include "Encoder.h"
 #include "Fixedstring.h"
+#include "Backend.h"
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <thread>
 #include <memory>
+#include <x86intrin.h>  // For __rdtsc()
 
 namespace logZ {
 
@@ -95,53 +97,66 @@ public:
 
 private:
     /**
-     * @brief Get current timestamp in nanoseconds
+     * @brief Get current timestamp using RDTSC (ultra-low latency)
+     * 使用 RDTSC 获取时间戳，比 chrono 快约 3-5 倍
+     * 返回的是原始 TSC 值，Backend 负责转换为实际时间
      */
+    __attribute__((always_inline))
     static uint64_t get_timestamp_ns() {
-        auto now = std::chrono::system_clock::now();
-        auto duration = now.time_since_epoch();
-        return std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
+        // 直接返回 TSC 值，Backend 会转换
+        return __rdtsc();
     }
 };
 
 } // namespace logZ
 
 // Backend must be included before implementing get_thread_queue
-#include "Backend.h"
+
 
 namespace logZ {
 
 // Implementation of get_thread_queue() - must be after Backend is complete
+// 使用 RAII guard 确保线程退出时自动清理
 inline Queue& Logger::get_thread_queue() {
-    struct ThreadLocalData {
-        Queue* queue_ptr;
-        
-        ThreadLocalData() {
-            auto& backend = Logger::get_backend<MinLevel>();
-            queue_ptr = backend.allocate_queue_for_thread();
-            
-            if (!queue_ptr) [[unlikely]] {
-                throw std::runtime_error("Failed to allocate queue from Backend");
-            }
-        }
-        
-        ~ThreadLocalData() {
-            if (queue_ptr) {
-                auto& backend = Logger::get_backend<MinLevel>();
-                backend.mark_queue_orphaned(queue_ptr);
+    // 裸指针 TLS：访问更快（避免 struct 间接访问）
+    static thread_local Queue* tls_queue = nullptr;
+    
+    // RAII guard：负责线程退出时的清理
+    // 只在第一次初始化时创建，析构时标记队列为 orphaned
+    struct CleanupGuard {
+        Queue* q;
+        ~CleanupGuard() {
+            if (q) {
+                Logger::get_backend<MinLevel>().mark_queue_orphaned(q);
             }
         }
     };
+    static thread_local CleanupGuard guard{nullptr};
     
-    static thread_local ThreadLocalData tls_data;
+    // 快速路径：已经初始化
+    if (tls_queue != nullptr) [[likely]] {
+        return *tls_queue;
+    }
     
-    return *tls_data.queue_ptr;
+    // 慢速路径：首次初始化
+    auto& backend = Logger::get_backend<MinLevel>();
+    tls_queue = backend.allocate_queue_for_thread();
+    
+    if (!tls_queue) [[unlikely]] {
+        throw std::runtime_error("Failed to allocate queue from Backend");
+    }
+    
+    guard.q = tls_queue;  // 绑定到 guard，线程退出时自动清理
+    return *tls_queue;
 }
 
 // Implementation of log_impl() - must be after Backend is complete
 template<auto Fmt, LogLevel Level, typename... Args>
+__attribute__((always_inline, hot))
 void Logger::log_impl(const Args&... args) {
+    // 获取 TSC 时间戳（比 chrono 快 3-5 倍）
     auto timestamp = get_timestamp_ns();
+    
     // Calculate args size once
     size_t args_size = calculate_args_size(args...);
     size_t total_size = sizeof(Metadata) + args_size;
@@ -149,6 +164,7 @@ void Logger::log_impl(const Args&... args) {
     // Reserve space in queue
     Queue& queue = get_thread_queue();
     std::byte* buffer = queue.reserve_write(total_size);
+    
     // Hot path: Buffer allocation usually succeeds
     if (buffer == nullptr) [[unlikely]] {
         // Queue is full, log message lost

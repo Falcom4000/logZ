@@ -13,6 +13,7 @@
 namespace logZ {
 
 template<typename T>
+__attribute__((always_inline))
 inline size_t calculate_single_arg_size(const T& arg) {
     using RawT = std::remove_cv_t<std::remove_reference_t<T>>;
     
@@ -56,6 +57,7 @@ inline size_t calculate_single_arg_size(const T& arg) {
  * @brief Calculate the size needed for log arguments
  */
 template<typename... Args>
+__attribute__((always_inline))
 inline size_t calculate_args_size(const Args&... args) {
     if constexpr (sizeof...(args) == 0) {
         return 0;
@@ -70,6 +72,7 @@ inline size_t calculate_args_size(const Args&... args) {
  * @return Pointer to the next write position after encoding
  */
 template<typename T>
+__attribute__((always_inline))
 inline std::byte* encode_single_arg(std::byte* ptr, const T& arg) {
     using RawT = std::remove_cv_t<std::remove_reference_t<T>>;
     
@@ -140,6 +143,7 @@ inline std::byte* encode_single_arg(std::byte* ptr, const T& arg) {
  * @brief Serialize arguments into buffer
  */
 template<typename... Args>
+__attribute__((always_inline))
 inline void encode_args(std::byte* buffer, const Args&... args) {
     if constexpr (sizeof...(args) == 0) {
         return;
@@ -161,14 +165,14 @@ inline void encode_args(std::byte* buffer, const Args&... args) {
  * @param args Arguments to encode
  */
 template<auto FMT, LogLevel Level, typename... Args>
+__attribute__((always_inline))
 inline void encode_log_entry(std::byte* buffer, uint64_t timestamp, size_t args_size, const Args&... args) {
-    // Use Metadata from LogTypes.h
+    // Use Metadata from LogTypes.h (optimized layout)
     Metadata* metadata = reinterpret_cast<Metadata*>(buffer);
-    metadata->level = Level;
     metadata->timestamp = timestamp;
-    metadata->args_size = static_cast<uint32_t>(args_size);
-    // Cast decoder function pointer to DecoderFunc type (void (*)(const std::byte*, void*))
     metadata->decoder = reinterpret_cast<DecoderFunc>(get_decoder<FMT, Args...>());
+    metadata->args_size = static_cast<uint32_t>(args_size);
+    metadata->level = Level;
     
     // Write arguments after metadata
     std::byte* ptr = buffer + sizeof(Metadata);

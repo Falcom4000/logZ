@@ -476,10 +476,13 @@ private:
 
     /**
      * @brief Format timestamp to HH:MM:SS:sss
-     * @param timestamp_ns Timestamp in nanoseconds
+     * @param tsc_value TSC value from RDTSC (will be converted to nanoseconds)
      * @return Formatted time string
      */
-    static std::string format_timestamp(uint64_t timestamp_ns) {
+    static std::string format_timestamp(uint64_t tsc_value) {
+        // Convert TSC to nanoseconds using calibration
+        uint64_t timestamp_ns = tsc_to_ns(tsc_value);
+        
         // Convert nanoseconds to milliseconds
         uint64_t total_ms = timestamp_ns / 1000000;
         

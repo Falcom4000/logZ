@@ -7,7 +7,7 @@ namespace logZ {
 template <size_t N>
 struct FixedString {
     char data[N]{};
-    constexpr FixedString(const char (&str)[N]) {
+    consteval FixedString(const char (&str)[N]) {
         std::copy_n(str, N, data);
     }
     
